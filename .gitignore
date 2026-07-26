@@ -1,0 +1,9 @@
+.expo/
+node_modules/
+dist/
+web-build/
+yarn.lock
+.env
+.DS_Store
+*.log
+*.csv
