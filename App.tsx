@@ -3,12 +3,13 @@ import {
   ActivityIndicator,
   Alert,
   Pressable,
-  SafeAreaView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView, SafeAreaProvider } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system';
 import * as Location from 'expo-location';
 import * as Sharing from 'expo-sharing';
@@ -109,6 +110,17 @@ export default function App() {
       const servicesEnabled = await Location.hasServicesEnabledAsync();
       const sensorsGranted = accelerometerAvailable && gyroscopeAvailable;
       const locationGranted = locationPermission.granted && servicesEnabled;
+      let backgroundGranted = false;
+      // Request background permission where applicable. Note: background permission
+      // requires a standalone/custom dev build on native platforms to be effective.
+      if (Platform.OS === 'android' || Platform.OS === 'ios') {
+        try {
+          const bg = await Location.requestBackgroundPermissionsAsync();
+          backgroundGranted = bg.granted === true;
+        } catch (e) {
+          backgroundGranted = false;
+        }
+      }
       setPermissionState({
         sensors: sensorsGranted ? 'granted' : 'denied',
         location: locationGranted ? 'granted' : 'denied',
@@ -118,7 +130,11 @@ export default function App() {
         sensorManager.stop();
       } else {
         await sensorManager.start();
-        setMessage('Ready to record.');
+        if (!backgroundGranted) {
+          setMessage('Ready to record (foreground). Background location not granted — background logging may not work.');
+        } else {
+          setMessage('Ready to record. Background location granted.');
+        }
       }
     } catch (error) {
       setPermissionState({ sensors: 'denied', location: 'denied' });
@@ -191,8 +207,9 @@ export default function App() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Road Anomaly Recorder</Text>
           <Text style={styles.subtitle}>Sensor capture only. No ML. No backend.</Text>
@@ -285,7 +302,8 @@ export default function App() {
           ))}
         </View>
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
