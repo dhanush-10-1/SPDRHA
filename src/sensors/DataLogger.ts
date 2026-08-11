@@ -1,4 +1,4 @@
-import { File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { sensorManager } from './SensorManager';
 import { SensorReading } from './types';
 
@@ -31,7 +31,7 @@ function formatRow(reading: SensorReading, label: string) {
 }
 
 class DataLoggerClass {
-  private currentFile: File | null = null;
+  private currentFileUri: string | null = null;
   private unsubscribe: (() => void) | null = null;
   private activeLabel: string | null = null;
   private rowCount = 0;
@@ -45,16 +45,21 @@ class DataLoggerClass {
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const fileName = `reading_${label}_${timestamp}.csv`;
-    this.currentFile = new File(Paths.document, fileName);
-    this.currentFile.create({ overwrite: true, intermediates: true });
-    this.currentFile.write(HEADER);
+    const dir = FileSystem.documentDirectory;
+    if (!dir) {
+      throw new Error('Document directory is unavailable.');
+    }
+
+    void FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    this.currentFileUri = `${dir}${fileName}`;
+    void FileSystem.writeAsStringAsync(this.currentFileUri, HEADER);
     this.activeLabel = label;
     this.rowCount = 0;
     this.pendingRows = [];
     this.logging = true;
 
     this.unsubscribe = manager.onReading((reading) => {
-      if (!this.logging || !this.currentFile || !this.activeLabel) {
+      if (!this.logging || !this.currentFileUri || !this.activeLabel) {
         return;
       }
       this.rowCount += 1;
@@ -66,7 +71,7 @@ class DataLoggerClass {
   }
 
   async stopLogging(): Promise<string> {
-    if (!this.currentFile) {
+    if (!this.currentFileUri) {
       return '';
     }
 
@@ -74,8 +79,8 @@ class DataLoggerClass {
     this.unsubscribe?.();
     this.unsubscribe = null;
     await this.flush();
-    const fileUri = this.currentFile.uri;
-    this.currentFile = null;
+    const fileUri = this.currentFileUri ?? '';
+    this.currentFileUri = null;
     this.activeLabel = null;
     return fileUri;
   }
@@ -89,13 +94,15 @@ class DataLoggerClass {
   }
 
   private async flush() {
-    if (!this.currentFile || this.pendingRows.length === 0) {
+    if (!this.currentFileUri || this.pendingRows.length === 0) {
       return;
     }
 
     const rows = this.pendingRows.join('');
     this.pendingRows = [];
-    this.currentFile.write(rows, { append: true });
+    if (this.currentFileUri) {
+      await FileSystem.writeAsStringAsync(this.currentFileUri, rows, { append: true });
+    }
   }
 }
 

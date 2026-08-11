@@ -36,7 +36,7 @@ class SensorManagerClass {
 
     if (!sensorsGranted || !locationGranted) {
       this.started = false;
-      throw new Error('Sensor or location permission unavailable.');
+      throw new Error('Location permission is required for road anomaly detection. Please enable it in Settings.');
     }
 
     await this.startSubscriptions();
