@@ -41,7 +41,8 @@
           "locationAlwaysAndWhenInUsePermission": "Allow SPDRHA to access your location for road anomaly detection.",
           "isAndroidBackgroundLocationEnabled": true
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "extra": {
       "eas": {

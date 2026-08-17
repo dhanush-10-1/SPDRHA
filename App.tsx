@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,16 +10,14 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, SafeAreaProvider } from 'react-native-safe-area-context';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Location from 'expo-location';
 import * as Sharing from 'expo-sharing';
+import { getAutoLabel } from './src/sensors/AutoLabeller';
 import { DataLogger } from './src/sensors/DataLogger';
 import { GPSReading, SensorReading } from './src/sensors/types';
 import { sensorManager } from './src/sensors/SensorManager';
 import { Accelerometer, Gyroscope } from 'expo-sensors';
-
-const LABELS = ['NORMAL', 'POTHOLE', 'SPEED_BREAKER', 'BUMP'] as const;
-type Label = (typeof LABELS)[number];
 
 type PermissionState = {
   sensors: 'pending' | 'granted' | 'denied';
@@ -57,17 +55,22 @@ async function shareFile(uri: string) {
 
 export default function App() {
   const [latestReading, setLatestReading] = useState<SensorReading>(emptyReading());
+  const [currentLabel, setCurrentLabel] = useState('NORMAL');
   const [permissionState, setPermissionState] = useState<PermissionState>({
     sensors: 'pending',
     location: 'pending',
   });
-  const [selectedLabel, setSelectedLabel] = useState<Label | null>(null);
   const [recording, setRecording] = useState(false);
   const [rowCount, setRowCount] = useState(0);
   const [savedFileUri, setSavedFileUri] = useState<string | null>(null);
   const [recordedFiles, setRecordedFiles] = useState<FileItem[]>([]);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('Select a label before recording.');
+  const [message, setMessage] = useState('Ready to record.');
+  const currentMagnitude = Math.sqrt(
+    latestReading.acc.x * latestReading.acc.x +
+    latestReading.acc.y * latestReading.acc.y +
+    latestReading.acc.z * latestReading.acc.z
+  );
 
   const permissionLabel = useMemo(() => {
     const sensors = permissionState.sensors === 'granted' ? 'Granted' : permissionState.sensors === 'denied' ? 'Denied' : 'Checking';
@@ -76,65 +79,81 @@ export default function App() {
   }, [permissionState]);
 
   async function refreshFiles() {
-    const directory = FileSystem.Paths.document;
-    const snapshot = await directory.info();
-    if (!snapshot.exists || !snapshot.files) {
+    const directory = FileSystem.documentDirectory;
+    if (!directory) {
       setRecordedFiles([]);
       return;
     }
 
-    const items = snapshot.files
-      .filter((name) => name.startsWith('reading_') && name.endsWith('.csv'))
-      .map((name) => {
-        const file = new FileSystem.File(directory, name);
-        const info = file.info();
-        return {
-          name,
-          uri: file.uri,
-          size: info.size ?? 0,
-        };
-      })
-      .sort((left, right) => right.name.localeCompare(left.name));
+    const names = await FileSystem.readDirectoryAsync(directory);
+    const items = await Promise.all(
+      names
+        .filter((name) => name.startsWith('reading_') && name.endsWith('.csv'))
+        .map(async (name) => {
+          const fileUri = `${directory}${name}`;
+          const info = await FileSystem.getInfoAsync(fileUri);
+          const size = info.exists && 'size' in info && typeof info.size === 'number' ? info.size : 0;
+          return {
+            name,
+            uri: fileUri,
+            size,
+          };
+        })
+    );
 
-    setRecordedFiles(items);
+    setRecordedFiles(items.sort((left, right) => right.name.localeCompare(left.name)));
   }
 
   async function initializePermissions() {
     setBusy(true);
     try {
-      const [accelerometerAvailable, gyroscopeAvailable, locationPermission] = await Promise.all([
+      const [accelerometerAvailable, gyroscopeAvailable] = await Promise.all([
         Accelerometer.isAvailableAsync(),
         Gyroscope.isAvailableAsync(),
-        Location.requestForegroundPermissionsAsync(),
       ]);
-      const servicesEnabled = await Location.hasServicesEnabledAsync();
-      const sensorsGranted = accelerometerAvailable && gyroscopeAvailable;
-      const locationGranted = locationPermission.granted && servicesEnabled;
+
+      let locationPermission = { granted: false } as Location.LocationPermissionResponse;
+      let servicesEnabled = false;
       let backgroundGranted = false;
-      // Request background permission where applicable. Note: background permission
-      // requires a standalone/custom dev build on native platforms to be effective.
+
+      try {
+        locationPermission = await Location.requestForegroundPermissionsAsync();
+        servicesEnabled = await Location.hasServicesEnabledAsync();
+      } catch (error) {
+        console.warn('Location permission request failed; continuing without GPS.', error);
+      }
+
       if (Platform.OS === 'android' || Platform.OS === 'ios') {
         try {
           const bg = await Location.requestBackgroundPermissionsAsync();
           backgroundGranted = bg.granted === true;
-        } catch (e) {
+        } catch (error) {
+          console.warn('Background location permission unavailable; continuing with foreground-only GPS.', error);
           backgroundGranted = false;
         }
       }
+
+      const sensorsGranted = accelerometerAvailable && gyroscopeAvailable;
+      const locationGranted = locationPermission.granted && servicesEnabled;
+
       setPermissionState({
         sensors: sensorsGranted ? 'granted' : 'denied',
         location: locationGranted ? 'granted' : 'denied',
       });
-      if (!sensorsGranted || !locationGranted) {
-        setMessage('Permissions denied. Retry to enable sensors and GPS.');
+
+      if (!sensorsGranted) {
+        setMessage('Sensor permissions denied. Enable motion sensors to continue.');
         sensorManager.stop();
+        return;
+      }
+
+      await sensorManager.start();
+      if (!locationGranted) {
+        setMessage('Sensors ready. GPS is unavailable; recording will continue without location data.');
+      } else if (!backgroundGranted) {
+        setMessage('Ready to record (foreground). Background location not granted — background logging may not work.');
       } else {
-        await sensorManager.start();
-        if (!backgroundGranted) {
-          setMessage('Ready to record (foreground). Background location not granted — background logging may not work.');
-        } else {
-          setMessage('Ready to record. Background location granted.');
-        }
+        setMessage('Ready to record. Background location granted.');
       }
     } catch (error) {
       setPermissionState({ sensors: 'denied', location: 'denied' });
@@ -146,6 +165,9 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = sensorManager.onReading((reading) => {
+      const label = getAutoLabel(reading.acc.x, reading.acc.y, reading.acc.z);
+      setCurrentLabel(label);
+      DataLogger.appendRow(reading, label);
       setLatestReading(reading);
     });
     void initializePermissions();
@@ -167,17 +189,19 @@ export default function App() {
     return () => clearInterval(interval);
   }, [recording]);
 
-  async function handleStart() {
-    if (!selectedLabel) {
+  function handleStart() {
+    if (DataLogger.isLogging()) {
+      setMessage('Recording already in progress.');
       return;
     }
+
     try {
       setBusy(true);
-      await DataLogger.startLogging(selectedLabel, sensorManager);
+      DataLogger.startLogging();
       setRowCount(0);
       setSavedFileUri(null);
       setRecording(true);
-      setMessage(`Recording ${selectedLabel}.`);
+      setMessage('Recording in progress.');
     } catch (error) {
       Alert.alert('Could not start recording', error instanceof Error ? error.message : 'Unknown error');
     } finally {
@@ -186,6 +210,11 @@ export default function App() {
   }
 
   async function handleStop() {
+    if (!DataLogger.isLogging()) {
+      setRecording(false);
+      return;
+    }
+
     try {
       setBusy(true);
       const fileUri = await DataLogger.stopLogging();
@@ -237,6 +266,21 @@ export default function App() {
           <Text style={styles.metric}>Acc X {latestReading.acc.x.toFixed(2)}  Y {latestReading.acc.y.toFixed(2)}  Z {latestReading.acc.z.toFixed(2)}</Text>
           <Text style={styles.metric}>Gyro X {latestReading.gyro.x.toFixed(2)}  Y {latestReading.gyro.y.toFixed(2)}  Z {latestReading.gyro.z.toFixed(2)}</Text>
           <Text style={styles.metric}>GPS {formatGps(latestReading.gps)}</Text>
+          <View style={styles.currentLabelRow}>
+            <Text style={styles.currentLabelText}>Current:</Text>
+            <View
+              style={[
+                styles.currentLabelBadge,
+                currentLabel === 'NORMAL' && styles.labelNormal,
+                currentLabel === 'POTHOLE' && styles.labelPothole,
+                currentLabel === 'SPEED_BREAKER' && styles.labelSpeedBreaker,
+                currentLabel === 'BUMP' && styles.labelBump,
+              ]}
+            >
+              <Text style={styles.currentLabelBadgeText}>{currentLabel}</Text>
+            </View>
+            <Text style={styles.currentLabelText}>magnitude: {currentMagnitude.toFixed(2)}</Text>
+          </View>
           {recording ? (
             <View style={styles.recordingRow}>
               <View style={styles.recordingDot} />
@@ -246,28 +290,14 @@ export default function App() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Label</Text>
-          <View style={styles.labelGrid}>
-            {LABELS.map((label) => {
-              const active = selectedLabel === label;
-              return (
-                <Pressable key={label} onPress={() => setSelectedLabel(label)} style={[styles.labelButton, active && styles.labelButtonActive]}>
-                  <Text style={[styles.labelButtonText, active && styles.labelButtonTextActive]}>{label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-
-        <View style={styles.card}>
           <Text style={styles.cardTitle}>Recording</Text>
           <Text style={styles.metric}>Rows logged: {rowCount}</Text>
           <Text style={styles.message}>{message}</Text>
           <View style={styles.actionRow}>
             {!recording ? (
               <Pressable
-                style={[styles.primaryButton, (!selectedLabel || busy) && styles.buttonDisabled]}
-                disabled={!selectedLabel || busy}
+                style={[styles.primaryButton, busy && styles.buttonDisabled]}
+                disabled={busy}
                 onPress={handleStart}
               >
                 <Text style={styles.primaryButtonText}>Start Recording</Text>
@@ -383,28 +413,35 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.8,
   },
-  labelGrid: {
+  currentLabelRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  labelButton: {
-    minWidth: '47%',
-    paddingVertical: 16,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    backgroundColor: '#e2e8f0',
     alignItems: 'center',
+    gap: 8,
   },
-  labelButtonActive: {
-    backgroundColor: '#0f172a',
-  },
-  labelButtonText: {
+  currentLabelText: {
+    color: '#334155',
     fontWeight: '700',
-    color: '#0f172a',
   },
-  labelButtonTextActive: {
-    color: '#ffffff',
+  currentLabelBadge: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 14,
+  },
+  currentLabelBadgeText: {
+    color: '#111827',
+    fontWeight: '800',
+  },
+  labelNormal: {
+    backgroundColor: '#86efac',
+  },
+  labelPothole: {
+    backgroundColor: '#fca5a5',
+  },
+  labelSpeedBreaker: {
+    backgroundColor: '#fdba74',
+  },
+  labelBump: {
+    backgroundColor: '#fde047',
   },
   actionRow: {
     flexDirection: 'row',

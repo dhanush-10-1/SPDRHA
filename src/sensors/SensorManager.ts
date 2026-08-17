@@ -26,17 +26,10 @@ class SensorManagerClass {
       Accelerometer.isAvailableAsync(),
       Gyroscope.isAvailableAsync(),
     ]);
-    const [locationPermission, servicesEnabled] = await Promise.all([
-      Location.requestForegroundPermissionsAsync(),
-      Location.hasServicesEnabledAsync(),
-    ]);
 
-    const sensorsGranted = sensorStatus.every(Boolean);
-    const locationGranted = locationPermission.granted && servicesEnabled;
-
-    if (!sensorsGranted || !locationGranted) {
+    if (!sensorStatus.every(Boolean)) {
       this.started = false;
-      throw new Error('Location permission is required for road anomaly detection. Please enable it in Settings.');
+      throw new Error('Sensor hardware is unavailable on this device.');
     }
 
     await this.startSubscriptions();
@@ -82,24 +75,41 @@ class SensorManagerClass {
       this.emitReading();
     });
 
-    this.gpsSubscription = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 1000,
-        distanceInterval: 0,
-      },
-      (location) => {
-        const speed = typeof location.coords.speed === 'number' && Number.isFinite(location.coords.speed) ? location.coords.speed : 0;
-        this.lastGps = {
-          lat: location.coords.latitude,
-          lng: location.coords.longitude,
-          speedKmh: speed * 3.6,
-          accuracyM: location.coords.accuracy ?? 0,
-          timestamp: location.timestamp,
-        };
-        this.emitReading();
-      },
-    );
+    try {
+      const foregroundPermission = await Location.getForegroundPermissionsAsync();
+      if (!foregroundPermission.granted) {
+        return;
+      }
+
+      const servicesEnabled = await Location.hasServicesEnabledAsync();
+      if (!servicesEnabled) {
+        return;
+      }
+
+      this.gpsSubscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 1000,
+          distanceInterval: 0,
+        },
+        (location) => {
+          const speed = typeof location.coords.speed === 'number' && Number.isFinite(location.coords.speed)
+            ? location.coords.speed
+            : 0;
+
+          this.lastGps = {
+            lat: location.coords.latitude,
+            lng: location.coords.longitude,
+            speedKmh: speed * 3.6,
+            accuracyM: location.coords.accuracy ?? 0,
+            timestamp: location.timestamp,
+          };
+          this.emitReading();
+        },
+      );
+    } catch (error) {
+      console.warn('GPS unavailable or not granted; continuing with sensor-only capture.', error);
+    }
   }
 
   private emitReading() {

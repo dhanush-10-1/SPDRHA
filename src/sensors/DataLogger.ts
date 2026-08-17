@@ -1,5 +1,4 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { sensorManager } from './SensorManager';
 import { SensorReading } from './types';
 
 const HEADER = 'timestamp,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,gps_lat,gps_lng,gps_speed_kmh,gps_accuracy_m,label\n';
@@ -32,56 +31,64 @@ function formatRow(reading: SensorReading, label: string) {
 
 class DataLoggerClass {
   private currentFileUri: string | null = null;
-  private unsubscribe: (() => void) | null = null;
-  private activeLabel: string | null = null;
   private rowCount = 0;
   private pendingRows: string[] = [];
   private logging = false;
+  private writeQueue: Promise<void> = Promise.resolve();
 
-  startLogging(label: string, manager = sensorManager): void {
+  startLogging(): void {
     if (this.logging) {
       throw new Error('Already recording. Stop the current session first.');
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const fileName = `reading_${label}_${timestamp}.csv`;
+    const fileName = `reading_${timestamp}.csv`;
     const dir = FileSystem.documentDirectory;
     if (!dir) {
       throw new Error('Document directory is unavailable.');
     }
 
-    void FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-    this.currentFileUri = `${dir}${fileName}`;
-    void FileSystem.writeAsStringAsync(this.currentFileUri, HEADER);
-    this.activeLabel = label;
+    const fileUri = `${dir}${fileName}`;
+    this.currentFileUri = fileUri;
     this.rowCount = 0;
     this.pendingRows = [];
     this.logging = true;
 
-    this.unsubscribe = manager.onReading((reading) => {
-      if (!this.logging || !this.currentFileUri || !this.activeLabel) {
-        return;
-      }
-      this.rowCount += 1;
-      this.pendingRows.push(formatRow(reading, this.activeLabel));
-      if (this.pendingRows.length >= FLUSH_SIZE) {
-        void this.flush();
-      }
-    });
+    this.writeQueue = this.writeQueue
+      .then(async () => {
+        await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+        await FileSystem.writeAsStringAsync(fileUri, HEADER, { encoding: FileSystem.EncodingType.UTF8 });
+      })
+      .catch((error) => {
+        this.logging = false;
+        this.currentFileUri = null;
+        this.pendingRows = [];
+        throw error;
+      });
+  }
+
+  appendRow(reading: SensorReading, label: string): void {
+    if (!this.logging || !this.currentFileUri) {
+      return;
+    }
+
+    this.rowCount += 1;
+    this.pendingRows.push(formatRow(reading, label));
+    if (this.pendingRows.length >= FLUSH_SIZE) {
+      void this.flush();
+    }
   }
 
   async stopLogging(): Promise<string> {
-    if (!this.currentFileUri) {
+    const fileUri = this.currentFileUri;
+    if (!fileUri) {
       return '';
     }
 
     this.logging = false;
-    this.unsubscribe?.();
-    this.unsubscribe = null;
     await this.flush();
-    const fileUri = this.currentFileUri ?? '';
     this.currentFileUri = null;
-    this.activeLabel = null;
+    this.pendingRows = [];
     return fileUri;
   }
 
@@ -93,16 +100,27 @@ class DataLoggerClass {
     return this.rowCount;
   }
 
-  private async flush() {
+  private async flush(): Promise<void> {
     if (!this.currentFileUri || this.pendingRows.length === 0) {
       return;
     }
 
-    const rows = this.pendingRows.join('');
+    const fileUri = this.currentFileUri;
+    const rows = this.pendingRows.slice();
     this.pendingRows = [];
-    if (this.currentFileUri) {
-      await FileSystem.writeAsStringAsync(this.currentFileUri, rows, { append: true });
-    }
+
+    await this.enqueueWrite(async () => {
+      if (!fileUri) {
+        throw new Error('No active recording file is available to flush.');
+      }
+      await FileSystem.writeAsStringAsync(fileUri, rows.join(''), { append: true, encoding: FileSystem.EncodingType.UTF8 });
+    });
+  }
+
+  private enqueueWrite(operation: () => Promise<void>): Promise<void> {
+    const nextWrite = this.writeQueue.then(operation, operation);
+    this.writeQueue = nextWrite.then(() => undefined, () => undefined);
+    return nextWrite;
   }
 }
 
