@@ -1,14 +1,15 @@
 export function getAutoLabel(acc_x: number, acc_y: number, acc_z: number): string {
-  const magnitude = Math.hypot(acc_x, acc_y, acc_z);
-  const deviation = Math.abs(magnitude - 1.0);
+  const magnitude = Math.sqrt(
+    acc_x * acc_x +
+    acc_y * acc_y +
+    acc_z * acc_z
+  );
+  const REST_BASELINE = 0.93;
+  const deviation = magnitude - REST_BASELINE;
 
-  // This is a conservative orientation-invariant heuristic. Expo accelerometer values
-  // are typically reported in g, so a stationary phone near 1g is a reasonable baseline;
-  // however, device orientation, calibration, and transient spikes still make this a rough
-  // heuristic rather than a scientific road-surface classifier.
-  if (deviation >= 1.5) return 'POTHOLE';
-  if (deviation >= 0.75) return 'SPEED_BREAKER';
-  if (deviation >= 0.25) return 'BUMP';
+  if (deviation < -0.5) return 'POTHOLE';
+  if (deviation > 0.6) return 'SPEED_BREAKER';
+  if (Math.abs(deviation) > 0.15) return 'BUMP';
 
   return 'NORMAL';
 }

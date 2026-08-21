@@ -30,6 +30,13 @@ type FileItem = {
   size: number;
 };
 
+type LabelCounts = {
+  NORMAL: number;
+  BUMP: number;
+  SPEED_BREAKER: number;
+  POTHOLE: number;
+};
+
 const emptyReading = (): SensorReading => ({
   timestamp: Date.now(),
   acc: { x: 0, y: 0, z: 0 },
@@ -62,6 +69,12 @@ export default function App() {
   });
   const [recording, setRecording] = useState(false);
   const [rowCount, setRowCount] = useState(0);
+  const [labelCounts, setLabelCounts] = useState<LabelCounts>({
+    NORMAL: 0,
+    BUMP: 0,
+    SPEED_BREAKER: 0,
+    POTHOLE: 0,
+  });
   const [savedFileUri, setSavedFileUri] = useState<string | null>(null);
   const [recordedFiles, setRecordedFiles] = useState<FileItem[]>([]);
   const [busy, setBusy] = useState(false);
@@ -71,6 +84,7 @@ export default function App() {
     latestReading.acc.y * latestReading.acc.y +
     latestReading.acc.z * latestReading.acc.z
   );
+  const gpsSpeed = latestReading.gps?.speedKmh ?? 0;
 
   const permissionLabel = useMemo(() => {
     const sensors = permissionState.sensors === 'granted' ? 'Granted' : permissionState.sensors === 'denied' ? 'Denied' : 'Checking';
@@ -167,6 +181,13 @@ export default function App() {
     const unsubscribe = sensorManager.onReading((reading) => {
       const label = getAutoLabel(reading.acc.x, reading.acc.y, reading.acc.z);
       setCurrentLabel(label);
+      if (DataLogger.isLogging()) {
+        const labelKey = label as keyof LabelCounts;
+        setLabelCounts((prev) => ({
+          ...prev,
+          [labelKey]: prev[labelKey] + 1,
+        }));
+      }
       DataLogger.appendRow(reading, label);
       setLatestReading(reading);
     });
@@ -199,6 +220,12 @@ export default function App() {
       setBusy(true);
       DataLogger.startLogging();
       setRowCount(0);
+      setLabelCounts({
+        NORMAL: 0,
+        BUMP: 0,
+        SPEED_BREAKER: 0,
+        POTHOLE: 0,
+      });
       setSavedFileUri(null);
       setRecording(true);
       setMessage('Recording in progress.');
@@ -266,6 +293,11 @@ export default function App() {
           <Text style={styles.metric}>Acc X {latestReading.acc.x.toFixed(2)}  Y {latestReading.acc.y.toFixed(2)}  Z {latestReading.acc.z.toFixed(2)}</Text>
           <Text style={styles.metric}>Gyro X {latestReading.gyro.x.toFixed(2)}  Y {latestReading.gyro.y.toFixed(2)}  Z {latestReading.gyro.z.toFixed(2)}</Text>
           <Text style={styles.metric}>GPS {formatGps(latestReading.gps)}</Text>
+          {recording && gpsSpeed < 20 ? (
+            <Text style={styles.speedWarning}>
+              ⚠️ Drive faster — data below 20 km/h is not useful for training
+            </Text>
+          ) : null}
           <View style={styles.currentLabelRow}>
             <Text style={styles.currentLabelText}>Current:</Text>
             <View
@@ -292,6 +324,26 @@ export default function App() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Recording</Text>
           <Text style={styles.metric}>Rows logged: {rowCount}</Text>
+          {recording ? (
+            <View style={styles.labelCounts}>
+              <View style={styles.labelCountRow}>
+                <Text style={[styles.labelCountName, styles.labelCountNormal]}>NORMAL</Text>
+                <Text style={styles.labelCountValue}>{labelCounts.NORMAL}</Text>
+              </View>
+              <View style={styles.labelCountRow}>
+                <Text style={[styles.labelCountName, styles.labelCountBump]}>BUMP</Text>
+                <Text style={styles.labelCountValue}>{labelCounts.BUMP}</Text>
+              </View>
+              <View style={styles.labelCountRow}>
+                <Text style={[styles.labelCountName, styles.labelCountSpeedBreaker]}>SPEED_BREAKER</Text>
+                <Text style={styles.labelCountValue}>{labelCounts.SPEED_BREAKER}</Text>
+              </View>
+              <View style={styles.labelCountRow}>
+                <Text style={[styles.labelCountName, styles.labelCountPothole]}>POTHOLE</Text>
+                <Text style={styles.labelCountValue}>{labelCounts.POTHOLE}</Text>
+              </View>
+            </View>
+          ) : null}
           <Text style={styles.message}>{message}</Text>
           <View style={styles.actionRow}>
             {!recording ? (
@@ -396,6 +448,43 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     fontSize: 15,
     lineHeight: 22,
+  },
+  speedWarning: {
+    color: '#FF6B00',
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  labelCounts: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    padding: 10,
+    gap: 6,
+  },
+  labelCountRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  labelCountName: {
+    fontWeight: '700',
+  },
+  labelCountValue: {
+    color: '#111827',
+    fontWeight: '700',
+  },
+  labelCountNormal: {
+    color: '#047857',
+  },
+  labelCountBump: {
+    color: '#ca8a04',
+  },
+  labelCountSpeedBreaker: {
+    color: '#ea580c',
+  },
+  labelCountPothole: {
+    color: '#dc2626',
   },
   recordingRow: {
     flexDirection: 'row',
