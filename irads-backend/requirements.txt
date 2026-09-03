@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+python-jose[cryptography]
+pydantic
+
+aiokafka
+asyncpg
+redis
+
+numpy
+pandas
+scikit-learn
+
+tensorflow
