@@ -293,7 +293,7 @@ export default function App() {
           <Text style={styles.metric}>Acc X {latestReading.acc.x.toFixed(2)}  Y {latestReading.acc.y.toFixed(2)}  Z {latestReading.acc.z.toFixed(2)}</Text>
           <Text style={styles.metric}>Gyro X {latestReading.gyro.x.toFixed(2)}  Y {latestReading.gyro.y.toFixed(2)}  Z {latestReading.gyro.z.toFixed(2)}</Text>
           <Text style={styles.metric}>GPS {formatGps(latestReading.gps)}</Text>
-          {recording && gpsSpeed < 20 ? (
+          {recording && gpsSpeed > 2 && gpsSpeed < 20 ? (
             <Text style={styles.speedWarning}>
               ⚠️ Drive faster — data below 20 km/h is not useful for training
             </Text>
