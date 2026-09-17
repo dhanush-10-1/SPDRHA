@@ -7,3 +7,7 @@ __pycache__/
 .DS_Store
 ml/models/*.h5
 ml/models/*.tflite
+
+android/app/debug.keystore
+.vscode/
+irads-backend/ml/data/

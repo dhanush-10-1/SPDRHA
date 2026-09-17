@@ -1,14 +1,19 @@
 import pandas as pd
 
 
-def analyze_timestamps(df: pd.DataFrame) -> None:
-    """
-    Analyze timestamp spacing and identify problematic gaps.
-    """
+SENSOR_COLUMNS = [
+    "acc_x",
+    "acc_y",
+    "acc_z",
+    "gyro_x",
+    "gyro_y",
+    "gyro_z",
+]
 
+
+def analyze_timestamps(df: pd.DataFrame) -> None:
     print("\n========== TIMESTAMP QUALITY ==========")
 
-    # Work file-by-file because recordings are separate sessions.
     for source_file, group in df.groupby("source_file"):
         timestamps = (
             group["timestamp"]
@@ -30,7 +35,11 @@ def analyze_timestamps(df: pd.DataFrame) -> None:
         print(f"Minimum interval: {intervals.min():.2f} ms")
         print(f"Maximum interval: {intervals.max():.2f} ms")
 
-        estimated_hz = 1000 / intervals.median()
+        estimated_hz = (
+            1000 / intervals.median()
+            if intervals.median() > 0
+            else 0
+        )
 
         print(f"Estimated sampling rate: {estimated_hz:.2f} Hz")
 
@@ -39,16 +48,10 @@ def analyze_timestamps(df: pd.DataFrame) -> None:
         print(f"Gaps > 100 ms: {len(large_gaps)}")
 
         if len(large_gaps) > 0:
-            print(
-                f"Largest gap: {large_gaps.max():.2f} ms"
-            )
+            print(f"Largest gap: {large_gaps.max():.2f} ms")
 
 
 def analyze_duplicates(df: pd.DataFrame) -> None:
-    """
-    Analyze duplicate timestamps.
-    """
-
     print("\n========== DUPLICATE TIMESTAMPS ==========")
 
     duplicate_mask = df.duplicated(
@@ -58,7 +61,10 @@ def analyze_duplicates(df: pd.DataFrame) -> None:
 
     duplicate_rows = df[duplicate_mask]
 
-    print(f"Rows involved in duplicate timestamps: {len(duplicate_rows)}")
+    print(
+        f"Rows involved in duplicate timestamps: "
+        f"{len(duplicate_rows)}"
+    )
 
     duplicate_groups = (
         duplicate_rows
@@ -69,4 +75,83 @@ def analyze_duplicates(df: pd.DataFrame) -> None:
     print(
         f"Duplicate timestamp groups: "
         f"{len(duplicate_groups)}"
+    )
+
+    # ---------------------------------------------------------
+    # EXACT DUPLICATE ROWS
+    # ---------------------------------------------------------
+
+    exact_duplicate_mask = df.duplicated(
+        subset=[
+            "source_file",
+            "timestamp",
+            *SENSOR_COLUMNS,
+        ],
+        keep=False,
+    )
+
+    exact_duplicates = df[exact_duplicate_mask]
+
+    print(
+        f"\nExact duplicate sensor rows: "
+        f"{len(exact_duplicates)}"
+    )
+
+    # ---------------------------------------------------------
+    # DUPLICATE TIMESTAMPS WITH DIFFERENT SENSOR VALUES
+    # ---------------------------------------------------------
+
+    duplicate_timestamp_groups = (
+        df[
+            df.duplicated(
+                subset=["source_file", "timestamp"],
+                keep=False,
+            )
+        ]
+        .groupby(["source_file", "timestamp"])
+    )
+
+    different_sensor_groups = 0
+    different_sensor_rows = 0
+
+    for _, group in duplicate_timestamp_groups:
+        unique_sensor_rows = group[SENSOR_COLUMNS].drop_duplicates()
+
+        if len(unique_sensor_rows) > 1:
+            different_sensor_groups += 1
+            different_sensor_rows += len(group)
+
+    print(
+        "Duplicate timestamp groups with "
+        f"different sensor values: {different_sensor_groups}"
+    )
+
+    print(
+        "Rows belonging to those groups: "
+        f"{different_sensor_rows}"
+    )
+
+
+def analyze_label_consistency(df: pd.DataFrame) -> None:
+    print("\n========== LABEL CONSISTENCY ==========")
+
+    duplicate_groups = (
+        df[
+            df.duplicated(
+                subset=["source_file", "timestamp"],
+                keep=False,
+            )
+        ]
+        .groupby(["source_file", "timestamp"])
+    )
+
+    conflicting_groups = 0
+
+    for _, group in duplicate_groups:
+        if group["label"].nunique() > 1:
+            conflicting_groups += 1
+
+    print(
+        "Duplicate timestamp groups with conflicting labels: "
+        f"{conflicting_groups}"
     )
