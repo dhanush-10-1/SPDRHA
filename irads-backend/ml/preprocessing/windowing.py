@@ -21,7 +21,6 @@ MIN_ANOMALY_SAMPLES = 3
 ANOMALY_LABELS = {
     "POTHOLE",
     "SPEED_BREAKER",
-    "BUMP",
 }
 
 
@@ -143,6 +142,8 @@ def create_windows(
                             count,
                         )
                     )
+            if "BUMP" in window_labels:
+                continue
 
             # ---------------------------------------------
             # Assign window label
@@ -152,10 +153,7 @@ def create_windows(
                 label = "POTHOLE"
 
             elif "SPEED_BREAKER" in window_labels:
-                label = "SPEED_BREAKER"
-
-            elif "BUMP" in window_labels:
-                label = "BUMP"
+                continue
 
             else:
                 label = "NORMAL"

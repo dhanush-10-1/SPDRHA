@@ -182,7 +182,7 @@ class SensorManagerClass {
      */
     try {
       const foregroundPermission =
-        await Location.getForegroundPermissionsAsync();
+        await Location.requestForegroundPermissionsAsync();
 
       if (!foregroundPermission.granted) {
         console.warn(

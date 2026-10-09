@@ -1,0 +1,15 @@
+node_modules/
+.expo/
+.git/
+dist/
+
+android/app/build/
+android/.gradle/
+android/.cxx/
+
+irads-backend/ml/data/
+irads-backend/ml/models/
+
+*.log
+hs_err_pid*.log
+replay_pid*.log

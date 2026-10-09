@@ -6,6 +6,7 @@ from backend.db.connection import connect, disconnect
 from backend.kafka.producer import start_producer, stop_producer
 from backend.routers.anomalies import router as anomalies_router
 from backend.routers.health import router as health_router
+from backend.routers.dev_auth import router as dev_auth_router
 
 
 @asynccontextmanager
@@ -25,7 +26,7 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(anomalies_router)
-
+app.include_router(dev_auth_router)
 
 @app.get("/")
 async def root():

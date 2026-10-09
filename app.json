@@ -42,7 +42,8 @@
           "isAndroidBackgroundLocationEnabled": true
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      "expo-sqlite"
     ],
     "extra": {
       "eas": {
