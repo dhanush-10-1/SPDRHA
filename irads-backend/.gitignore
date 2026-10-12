@@ -11,3 +11,10 @@ ml/models/*.tflite
 android/app/debug.keystore
 .vscode/
 irads-backend/ml/data/
+
+# Local Python virtual environment
+.venv/
+
+# Local model experiment backups
+ml/models/backup_*/
+ml/models/baseline_before_step7/

@@ -34,9 +34,20 @@ def verify_models():
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Create the same test input for both models.
+        # Derive dimensions from the saved models.
+    keras_input_shape = tuple(keras_model.input_shape[1:])
+    tflite_input_shape = tuple(
+        int(d) for d in input_details[0]["shape"][1:]
+    )
+
+    if keras_input_shape != tflite_input_shape:
+        raise ValueError(
+            f"Keras input shape {keras_input_shape} does not match "
+            f"TFLite input shape {tflite_input_shape}"
+        )
+
     test_input = np.random.randn(
-        1, 50, 6
+        1, *keras_input_shape
     ).astype(np.float32)
 
     # Keras prediction

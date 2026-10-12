@@ -13,7 +13,7 @@ def predict(
     Predict the anomaly class for one sensor window.
 
     Expected input:
-        (50, 6)
+        (20, 8)
 
     Returns:
         (predicted_class, confidence)
