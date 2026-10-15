@@ -1,40 +1,94 @@
+from pathlib import Path
+
 import numpy as np
 import tensorflow as tf
+
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import classification_report, confusion_matrix
 
 from ml.training.model import build_model
 from ml.preprocessing.loader import load_dataset
 from ml.preprocessing.windowing import create_windows
-from ml.training.dataset import prepare_dataset
+from ml.training.dataset import (
+    prepare_dataset,
+    balance_training_data,
+)
 
 
-MODEL_DIR = "ml/models"
+# ============================================================
+# PATHS
+# ============================================================
 
-BEST_MODEL_PATH = f"{MODEL_DIR}/best_model.keras"
-FINAL_MODEL_PATH = f"{MODEL_DIR}/final_model.keras"
-NORMALIZER_PATH = f"{MODEL_DIR}/normalization.json"
+MODEL_DIR = Path("ml/models")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+BEST_MODEL_PATH = MODEL_DIR / "best_model.keras"
+FINAL_MODEL_PATH = MODEL_DIR / "final_model.keras"
+NORMALIZER_PATH = MODEL_DIR / "normalization.json"
+TFLITE_MODEL_PATH = MODEL_DIR / "irads_model.tflite"
+
+
+CLASS_NAMES = [
+    "NORMAL",
+    "POTHOLE",
+    "SPEED_BREAKER",
+]
+
+def augment_training_windows(
+    X,
+    noise_std=0.015,
+    scale_low=0.95,
+    scale_high=1.05,
+    seed=42,
+):
+    rng = np.random.default_rng(seed)
+
+    # Make a separate copy so the original data remains unchanged.
+    X_aug = np.asarray(X, dtype=np.float32).copy()
+
+    # Add small random sensor noise.
+    noise = rng.normal(
+        loc=0.0,
+        scale=noise_std,
+        size=X_aug.shape,
+    ).astype(np.float32)
+
+    X_aug += noise
+
+    # Apply a small amplitude variation to each window.
+    scales = rng.uniform(
+        scale_low,
+        scale_high,
+        size=(X_aug.shape[0], 1, 1),
+    ).astype(np.float32)
+
+    X_aug *= scales
+
+    return X_aug
 
 # ============================================================
 # CLASS WEIGHTS
 # ============================================================
 
 def calculate_class_weights(y_train: np.ndarray) -> dict:
-    """Calculate balanced weights for each class."""
+    """Apply moderate weights to underrepresented classes."""
 
     classes = np.unique(y_train)
-
-    weights = compute_class_weight(
-        class_weight="balanced",
-        classes=classes,
-        y=y_train,
+    counts = np.array(
+        [(y_train == class_id).sum() for class_id in classes],
+        dtype=np.float64,
     )
+
+    if np.any(counts == 0):
+        raise ValueError("Every class must have training samples.")
+
+    # Softer than full inverse-frequency weighting.
+    weights = (counts.max() / counts) ** 0.25
 
     return {
         int(class_id): float(weight)
         for class_id, weight in zip(classes, weights)
     }
-
 
 # ============================================================
 # MODEL COMPILATION
@@ -45,7 +99,7 @@ def compile_model(model: tf.keras.Model) -> tf.keras.Model:
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(
-            learning_rate=0.001
+            learning_rate=0.0005
         ),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
@@ -65,18 +119,25 @@ def train_model(
     y_val: np.ndarray,
     normalizer,
 ):
-    """Train the IRADS CNN."""
+    """Train the IRADS 3-class CNN."""
 
     print("\n========== BUILDING MODEL ==========")
 
     model = build_model()
     model = compile_model(model)
 
+    print(f"Model output shape: {model.output_shape}")
+
+    if model.output_shape[-1] != 3:
+        raise ValueError(
+            "Model must have exactly 3 output classes."
+        )
+
     # --------------------------------------------------------
     # Save normalization parameters
     # --------------------------------------------------------
 
-    normalizer.save(NORMALIZER_PATH)
+    normalizer.save(str(NORMALIZER_PATH))
 
     print("\n========== NORMALIZATION ==========")
     print(f"Mean: {normalizer.mean}")
@@ -92,8 +153,17 @@ def train_model(
     print("\n========== CLASS WEIGHTS ==========")
 
     for class_id, weight in class_weights.items():
+
+        class_name = (
+            CLASS_NAMES[class_id]
+            if class_id < len(CLASS_NAMES)
+            else str(class_id)
+        )
+
         print(
-            f"Class {class_id}: {weight:.4f}"
+            f"{class_name:15s} "
+            f"(class {class_id}): "
+            f"{weight:.4f}"
         )
 
     # --------------------------------------------------------
@@ -103,14 +173,16 @@ def train_model(
     callbacks = [
 
         tf.keras.callbacks.ModelCheckpoint(
-            BEST_MODEL_PATH,
+            filepath=str(BEST_MODEL_PATH),
             monitor="val_loss",
+            mode="min",
             save_best_only=True,
             verbose=1,
         ),
 
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss",
+            mode="min",
             patience=10,
             restore_best_weights=True,
             verbose=1,
@@ -118,6 +190,7 @@ def train_model(
 
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor="val_loss",
+            mode="min",
             factor=0.5,
             patience=4,
             min_lr=1e-6,
@@ -126,55 +199,146 @@ def train_model(
     ]
 
     # --------------------------------------------------------
-    # Training
+    # Train
     # --------------------------------------------------------
 
     print("\n========== STARTING TRAINING ==========")
+
+    X_train = augment_training_windows(
+        X_train,
+        noise_std=0.015,
+        scale_low=0.95,
+        scale_high=1.05,
+        seed=42,
+    )
+
+    print(
+        "Applied augmentation to training windows:",
+        X_train.shape,
+    )
 
     history = model.fit(
         X_train,
         y_train,
         validation_data=(X_val, y_val),
         epochs=50,
-        batch_size=64,
+        batch_size=32,
         class_weight=class_weights,
+        shuffle=True,
         callbacks=callbacks,
         verbose=1,
     )
 
     # --------------------------------------------------------
-    # Save final model
+    # Save final restored model
     # --------------------------------------------------------
 
-    model.save(FINAL_MODEL_PATH)
-
-    print("\n========== MODEL SAVED ==========")
+    model.save(str(FINAL_MODEL_PATH))
 
     print(
-        f"Final model:\n"
-        f"  {FINAL_MODEL_PATH}"
-    )
-
-    print(
-        f"Best model:\n"
-        f"  {BEST_MODEL_PATH}"
+        f"\nSaved final model to: "
+        f"{FINAL_MODEL_PATH}"
     )
 
     return model, history
 
+# ============================================================
+# TEST EVALUATION
+# ============================================================
+
+def evaluate_model(
+    model: tf.keras.Model,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+):
+    """Evaluate model on held-out test data."""
+
+    print("\n========== FINAL TEST EVALUATION ==========")
+
+    test_loss, test_accuracy = model.evaluate(
+        X_test,
+        y_test,
+        verbose=1,
+    )
+
+    print(f"\nTest Loss     : {test_loss:.4f}")
+    print(f"Test Accuracy : {test_accuracy:.4f}")
+
+    probabilities = model.predict(
+        X_test,
+        verbose=0,
+    )
+
+    predictions = np.argmax(
+        probabilities,
+        axis=1,
+    )
+
+    print("\n========== CONFUSION MATRIX ==========")
+
+    matrix = confusion_matrix(
+        y_test,
+        predictions,
+        labels=[0, 1, 2],
+    )
+
+    print(matrix)
+
+    print("\n========== CLASSIFICATION REPORT ==========")
+
+    print(
+        classification_report(
+            y_test,
+            predictions,
+            labels=[0, 1, 2],
+            target_names=CLASS_NAMES,
+            digits=4,
+            zero_division=0,
+        )
+    )
+
 
 # ============================================================
-# MAIN PIPELINE
+# TFLITE CONVERSION
 # ============================================================
 
-if __name__ == "__main__":
+def convert_to_tflite(
+    model: tf.keras.Model,
+):
+    """Convert trained Keras model to TFLite."""
+
+    print("\n========== CONVERTING TO TFLITE ==========")
+
+    converter = tf.lite.TFLiteConverter.from_keras_model(
+        model
+    )
+
+    tflite_model = converter.convert()
+
+    with open(
+        TFLITE_MODEL_PATH,
+        "wb",
+    ) as file:
+        file.write(tflite_model)
+
+    print(
+        f"Saved TFLite model to: "
+        f"{TFLITE_MODEL_PATH}"
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
 
     print("\n========================================")
     print("        IRADS MODEL TRAINING")
     print("========================================")
 
     # --------------------------------------------------------
-    # 1. Load raw CSV dataset
+    # 1. Load labeled recordings
     # --------------------------------------------------------
 
     print("\n========== LOADING DATASET ==========")
@@ -184,28 +348,40 @@ if __name__ == "__main__":
     print(f"Rows loaded: {len(df)}")
 
     # --------------------------------------------------------
-    # 2. Create sensor windows
+    # 2. Create windows
     # --------------------------------------------------------
 
     print("\n========== CREATING WINDOWS ==========")
 
-    X, labels = create_windows(df)
+    X, labels, sources = create_windows(df)
 
-    print(f"X shape: {X.shape}")
+    print(f"X shape     : {X.shape}")
     print(f"Labels shape: {labels.shape}")
+    print(f"Sources     : {sources.shape}")
+
+    if len(X) == 0:
+        raise RuntimeError(
+            "No windows were generated."
+        )
 
     # --------------------------------------------------------
-    # 3. Show label distribution
+    # 3. Distribution
     # --------------------------------------------------------
+
+    print(
+        "\n========== WINDOW LABEL "
+        "DISTRIBUTION =========="
+    )
 
     unique, counts = np.unique(
         labels,
         return_counts=True,
     )
 
-    print("\n========== WINDOW LABEL DISTRIBUTION ==========")
-
-    for label, count in zip(unique, counts):
+    for label, count in zip(
+        unique,
+        counts,
+    ):
 
         percentage = (
             count / len(labels)
@@ -218,7 +394,7 @@ if __name__ == "__main__":
         )
 
     # --------------------------------------------------------
-    # 4. Prepare train / validation / test sets
+    # 4. Prepare dataset
     # --------------------------------------------------------
 
     print("\n========== PREPARING DATASET ==========")
@@ -234,7 +410,13 @@ if __name__ == "__main__":
     ) = prepare_dataset(
         X,
         labels,
+        sources,
     )
+
+
+    # --------------------------------------------------------
+    # 5. Verify shapes
+    # --------------------------------------------------------
 
     print("\n========== DATASET SPLIT ==========")
 
@@ -242,56 +424,31 @@ if __name__ == "__main__":
     print(f"Validation : {X_val.shape}")
     print(f"Test       : {X_test.shape}")
 
-    # --------------------------------------------------------
-    # 5. Dataset verification
-    # --------------------------------------------------------
+    for name, values in [
+        ("Training", y_train),
+        ("Validation", y_val),
+        ("Test", y_test),
+    ]:
 
-    print("\n========== DATASET READY ==========")
+        print(f"\n{name} labels:")
 
-    print(f"Training   : {X_train.shape}")
-    print(f"Validation : {X_val.shape}")
-    print(f"Test       : {X_test.shape}")
-
-    print("\nTraining labels:")
-
-    unique, counts = np.unique(
-        y_train,
-        return_counts=True,
-    )
-
-    for class_id, count in zip(unique, counts):
-        print(
-            f"Class {class_id}: {count}"
+        class_ids, class_counts = np.unique(
+            values,
+            return_counts=True,
         )
 
-    print("\nValidation labels:")
+        for class_id, count in zip(
+            class_ids,
+            class_counts,
+        ):
 
-    unique, counts = np.unique(
-        y_val,
-        return_counts=True,
-    )
-
-    for class_id, count in zip(unique, counts):
-        print(
-            f"Class {class_id}: {count}"
-        )
-
-    print("\nTest labels:")
-
-    unique, counts = np.unique(
-        y_test,
-        return_counts=True,
-    )
-
-    for class_id, count in zip(unique, counts):
-        print(
-            f"Class {class_id}: {count}"
-        )
-
-    print("\n========== DATASET VERIFICATION COMPLETE ==========")
+            print(
+                f"Class {class_id}: "
+                f"{count}"
+            )
 
     # --------------------------------------------------------
-    # 6. TRAIN MODEL
+    # 6. Train
     # --------------------------------------------------------
 
     model, history = train_model(
@@ -303,29 +460,25 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # 7. FINAL TEST EVALUATION
+    # 7. Test
     # --------------------------------------------------------
 
-    print("\n========== FINAL TEST EVALUATION ==========")
-
-    test_loss, test_accuracy = model.evaluate(
+    evaluate_model(
+        model,
         X_test,
         y_test,
-        verbose=1,
-    )
-
-    print(
-        f"\nTest Loss     : {test_loss:.4f}"
-    )
-
-    print(
-        f"Test Accuracy : {test_accuracy:.4f}"
     )
 
     # --------------------------------------------------------
-    # COMPLETE
+    # 8. TFLite
     # --------------------------------------------------------
+
+    convert_to_tflite(model)
 
     print("\n========================================")
     print("        TRAINING COMPLETE")
     print("========================================")
+
+
+if __name__ == "__main__":
+    main()

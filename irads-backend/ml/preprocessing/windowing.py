@@ -1,6 +1,4 @@
 import numpy as np
-import pandas as pd
-
 
 FEATURE_COLUMNS = [
     "acc_x",
@@ -9,182 +7,134 @@ FEATURE_COLUMNS = [
     "gyro_x",
     "gyro_y",
     "gyro_z",
+    "acc_mag",
+    "gyro_mag",
 ]
 
-WINDOW_SIZE = 50
-STEP_SIZE = 25
+WINDOW_SIZE = 20
 
-# Minimum number of samples required
-# for an anomaly to become the window label.
-MIN_ANOMALY_SAMPLES = 3
+# Normal data can be sampled less densely.
+NORMAL_STEP = 10
 
-ANOMALY_LABELS = {
+# Anomaly events need more representation.
+ANOMALY_STEP = 2
+
+CLASS_NAMES = [
+    "NORMAL",
     "POTHOLE",
     "SPEED_BREAKER",
-}
+]
 
 
-def create_windows(
-    df: pd.DataFrame,
-    window_size: int = WINDOW_SIZE,
-    step_size: int = STEP_SIZE,
-):
-    """
-    Convert sensor recordings into overlapping windows.
-
-    Windows are created independently for each source file,
-    so no window can cross recording boundaries.
-
-    Each window contains:
-
-        50 samples × 6 IMU features
-
-    Window labeling:
-
-        - Count occurrences of each anomaly label.
-        - If an anomaly has at least MIN_ANOMALY_SAMPLES
-          inside the window, select the anomaly with
-          the largest count.
-        - Otherwise label the window NORMAL.
-    """
-
+def create_windows(df, window_size=WINDOW_SIZE):
     X = []
     y = []
-
-    # --------------------------------------------------------
-    # Process each recording independently
-    # --------------------------------------------------------
+    source_windows = []
 
     if "source_file" in df.columns:
-
-        groups = df.groupby(
-            "source_file",
-            sort=False,
-        )
-
+        groups = df.groupby("source_file", sort=False)
     else:
-
-        groups = [
-            ("dataset", df)
-        ]
-
-    # --------------------------------------------------------
-    # Create windows
-    # --------------------------------------------------------
+        groups = [("dataset", df)]
 
     for source_file, recording in groups:
+        recording = recording.reset_index(drop=True)
 
-        recording = recording.reset_index(
-            drop=True
+        # Calculate acceleration magnitude.
+        recording["acc_mag"] = np.sqrt(
+            recording["acc_x"].to_numpy(dtype=np.float32) ** 2
+            + recording["acc_y"].to_numpy(dtype=np.float32) ** 2
+            + recording["acc_z"].to_numpy(dtype=np.float32) ** 2
         )
 
-        values = recording[
-            FEATURE_COLUMNS
-        ].to_numpy(
+        # Calculate gyroscope magnitude.
+        # Calculate sample-to-sample acceleration change.
+
+        recording["gyro_mag"] = np.sqrt(
+            recording["gyro_x"].to_numpy(dtype=np.float32) ** 2
+            + recording["gyro_y"].to_numpy(dtype=np.float32) ** 2
+            + recording["gyro_z"].to_numpy(dtype=np.float32) ** 2
+        )
+
+        # Each reading now contains 8 sensor features.
+        values = recording[FEATURE_COLUMNS].to_numpy(
             dtype=np.float32
         )
 
-        labels = recording[
-            "label"
-        ].to_numpy()
-
-        # ---------------------------------------------
-        # Don't create incomplete windows
-        # ---------------------------------------------
+        labels = (
+            recording["label"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .to_numpy()
+        )
 
         if len(recording) < window_size:
             continue
 
+        # -------------------------------------------------
+        # NORMAL WINDOWS
+        # -------------------------------------------------
+        # A normal window must contain only NORMAL labels.
+
         for start in range(
             0,
             len(recording) - window_size + 1,
-            step_size,
+            NORMAL_STEP,
         ):
+            end = start + window_size
+            window_labels = labels[start:end]
 
+            if np.all(window_labels == "NORMAL"):
+                X.append(values[start:end])
+                y.append("NORMAL")
+                source_windows.append(source_file)
+
+        # -------------------------------------------------
+        # ANOMALY WINDOWS
+        # -------------------------------------------------
+        # The center sample determines the event class.
+
+        anomaly_labels = {
+            "POTHOLE",
+            "SPEED_BREAKER",
+        }
+
+        for start in range(
+            0,
+            len(recording) - window_size + 1,
+            ANOMALY_STEP,
+        ):
             end = start + window_size
 
-            window = values[
-                start:end
-            ]
+            center = start + window_size // 2
+            center_label = labels[center]
 
-            window_labels = labels[
-                start:end
-            ]
+            if center_label not in anomaly_labels:
+                continue
 
-            # -----------------------------------------
-            # Count labels
-            # -----------------------------------------
+            window_labels = labels[start:end]
 
-            label_counts = pd.Series(
-                window_labels
-            ).value_counts()
-
-            # -----------------------------------------
-            # Find anomaly candidates
-            # -----------------------------------------
-
-            anomaly_candidates = []
-
-            for anomaly_label in ANOMALY_LABELS:
-
-                count = int(
-                    label_counts.get(
-                        anomaly_label,
-                        0,
-                    )
-                )
-
-                if count >= MIN_ANOMALY_SAMPLES:
-
-                    anomaly_candidates.append(
-                        (
-                            anomaly_label,
-                            count,
-                        )
-                    )
+            # Exclude windows that contain BUMP labels.
             if "BUMP" in window_labels:
                 continue
 
-            # ---------------------------------------------
-            # Assign window label
-            # ---------------------------------------------
+            X.append(values[start:end])
+            y.append(center_label)
+            source_windows.append(source_file)
 
-            if "POTHOLE" in window_labels:
-                label = "POTHOLE"
-
-            elif "SPEED_BREAKER" in window_labels:
-                continue
-
-            else:
-                label = "NORMAL"
-
-            X.append(window)
-            y.append(label)
-    # --------------------------------------------------------
-    # Empty dataset protection
-    # --------------------------------------------------------
-
+    # Handle an empty dataset safely.
     if not X:
-
         return (
             np.empty(
-                (
-                    0,
-                    window_size,
-                    len(FEATURE_COLUMNS),
-                ),
+                (0, window_size, len(FEATURE_COLUMNS)),
                 dtype=np.float32,
             ),
-            np.array(
-                [],
-                dtype=str,
-            ),
+            np.array([], dtype=str),
+            np.array([], dtype=str),
         )
 
-    return (
-        np.array(
-            X,
-            dtype=np.float32,
-        ),
-        np.array(y),
-    )
+    X = np.asarray(X, dtype=np.float32)
+    y = np.asarray(y, dtype=str)
+    source_windows = np.asarray(source_windows, dtype=str)
+
+    return X, y, source_windows

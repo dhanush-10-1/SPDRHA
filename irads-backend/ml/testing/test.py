@@ -49,7 +49,6 @@ FEATURE_COLUMNS = [
 
 CLASS_NAMES = [
     "NORMAL",
-    "BUMP",
     "POTHOLE",
     "SPEED_BREAKER",
 ]
