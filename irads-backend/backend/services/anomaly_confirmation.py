@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 
 CONFIDENCE_THRESHOLD = 0.70
 MATCH_RADIUS_METERS = 15.0
+SUPPORTED_ANOMALY_TYPES = {"POTHOLE", "SPEED_BREAKER"}
 
 
 async def process_raw_anomaly(
@@ -49,6 +50,11 @@ async def process_raw_anomaly(
 
             if raw_event["is_processed"]:
                 return "already_processed"
+
+            if raw_event["type"] not in SUPPORTED_ANOMALY_TYPES:
+                raise ValueError(
+                    f"Unsupported anomaly type: {raw_event['type']}"
+                )
 
             confidence = raw_event["confidence"]
 

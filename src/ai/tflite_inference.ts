@@ -2,25 +2,22 @@ import { loadTensorflowModel } from 'react-native-fast-tflite';
 
 import { normalizeWindow } from './normalization';
 import {
+  FEATURE_COUNT,
   IMUWindow,
   Prediction,
   PredictionClass,
+  WINDOW_SIZE,
 } from './types';
 
 const MODEL = require('../../assets/models/irads_model.tflite');
 
-type ModelClass =
-  | 'NORMAL'
-  | 'BUMP'
-  | 'POTHOLE'
-  | 'SPEED_BREAKER';
-
-const CLASS_NAMES: ModelClass[] = [
+const CLASS_NAMES: PredictionClass[] = [
   'NORMAL',
-  'BUMP',
   'POTHOLE',
   'SPEED_BREAKER',
 ];
+const EXPECTED_INPUT_SHAPE = [1, WINDOW_SIZE, FEATURE_COUNT];
+const EXPECTED_OUTPUT_SHAPE = [1, CLASS_NAMES.length];
 
 export class TFLiteInferenceEngine {
   private model: Awaited<
@@ -33,18 +30,49 @@ export class TFLiteInferenceEngine {
     }
 
     this.model = await loadTensorflowModel(MODEL, []);
+
+    const input = this.model.inputs[0];
+    const output = this.model.outputs[0];
+
+    if (
+      !input ||
+      input.dataType !== 'float32' ||
+      input.shape.length !== EXPECTED_INPUT_SHAPE.length ||
+      input.shape.some(
+        (dimension, index) =>
+          dimension !== EXPECTED_INPUT_SHAPE[index],
+      )
+    ) {
+      this.model = null;
+      throw new Error(
+        `Invalid TFLite input tensor: expected float32 ${EXPECTED_INPUT_SHAPE.join(
+          'x',
+        )}.`,
+      );
+    }
+
+    if (
+      !output ||
+      output.dataType !== 'float32' ||
+      output.shape.length !== EXPECTED_OUTPUT_SHAPE.length ||
+      output.shape.some(
+        (dimension, index) =>
+          dimension !== EXPECTED_OUTPUT_SHAPE[index],
+      )
+    ) {
+      this.model = null;
+      throw new Error(
+        `Invalid TFLite output tensor: expected float32 ${EXPECTED_OUTPUT_SHAPE.join(
+          'x',
+        )}.`,
+      );
+    }
   }
 
   async predict(window: IMUWindow): Promise<Prediction | null> {
     if (this.model === null) {
       throw new Error(
         'TFLite model is not initialized. Call initialize() first.',
-      );
-    }
-
-    if (window.length !== 50) {
-      throw new Error(
-        `Invalid window size: expected 50, got ${window.length}`,
       );
     }
 
@@ -55,7 +83,10 @@ export class TFLiteInferenceEngine {
     );
 
     const outputs = await this.model.run([
-      input.buffer,
+      input.buffer.slice(
+        input.byteOffset,
+        input.byteOffset + input.byteLength,
+      ),
     ]);
 
     const output = outputs[0];
@@ -68,9 +99,27 @@ export class TFLiteInferenceEngine {
       new Float32Array(output),
     );
 
-    if (scores.length !== 4) {
+    if (
+      scores.length !== CLASS_NAMES.length ||
+      scores.some((score) => !Number.isFinite(score))
+    ) {
       throw new Error(
-        `Invalid model output: expected 4 values, got ${scores.length}`,
+        `Invalid model output: expected ${CLASS_NAMES.length} finite values, got ${scores.length}`,
+      );
+    }
+
+    const total = scores.reduce(
+      (sum, score) => sum + score,
+      0,
+    );
+
+    if (
+      total <= 0 ||
+      scores.some((score) => score < 0) ||
+      Math.abs(total - 1) > 0.01
+    ) {
+      throw new Error(
+        'TFLite model output is not a valid probability distribution.',
       );
     }
 
@@ -84,17 +133,12 @@ export class TFLiteInferenceEngine {
 
     const modelClass = CLASS_NAMES[bestIndex];
 
-    // The temporary model has BUMP,
-    // but BUMP is not part of the final IRADS application.
-    if (modelClass === 'BUMP') {
-      return null;
-    }
-
-    const type: PredictionClass = modelClass;
-
     return {
-      type,
-      confidence: scores[bestIndex],
+      type: modelClass,
+      confidence: Math.max(
+        0,
+        Math.min(1, scores[bestIndex]),
+      ),
     };
   }
 }

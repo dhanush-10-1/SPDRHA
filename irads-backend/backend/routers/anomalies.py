@@ -82,7 +82,6 @@ async def get_nearby_anomalies(
     anomaly_type: Literal[
         "POTHOLE",
         "SPEED_BREAKER",
-        "BUMP",
     ] | None = None,
 ):
     pool = get_pool()
@@ -185,7 +184,7 @@ async def get_nearby_raw_anomalies(
     latitude: float = Query(..., ge=-90, le=90),
     longitude: float = Query(..., ge=-180, le=180),
     radius_m: float = Query(10000, gt=0, le=50000),
-    anomaly_type: Literal["POTHOLE", "SPEED_BREAKER", "BUMP"] | None = None,
+    anomaly_type: Literal["POTHOLE", "SPEED_BREAKER"] | None = None,
 ):
     pool = get_pool()
 

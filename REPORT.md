@@ -17,10 +17,9 @@ The mobile entry point is `App.tsx`.
 
 The app requests accelerometer, gyroscope, foreground GPS, and background GPS permissions. It displays live sensor values and allows the user to start and stop recordings.
 
-Supported labels are:
+Supported inference classes are:
 
 - `NORMAL`
-- `BUMP`
 - `SPEED_BREAKER`
 - `POTHOLE`
 
@@ -41,8 +40,9 @@ Recorded CSV files can be listed and shared through the native share sheet.
 
 `src/sensors/SensorManager.ts` manages sensor subscriptions.
 
-- Accelerometer and gyroscope updates are requested every 20 ms.
-- A timer emits synchronized readings at approximately 50 Hz.
+- Accelerometer and gyroscope updates are requested every 33 ms.
+- A timer emits synchronized readings at approximately 30 Hz, matching the
+  median interval in the labeled training recordings.
 - GPS is watched independently with approximately one-second updates.
 - The latest GPS value is attached to each IMU reading.
 - A rolling in-memory buffer stores the latest 50 readings.
@@ -75,7 +75,9 @@ The Android application ID is `com.spdrha.app`.
 
 The checked-in `android` project contains native Gradle configuration. The `android/app/build` directories are generated build artifacts.
 
-Although `react-native-fast-tflite` is installed, the mobile app does not currently load or execute the TFLite model.
+The root mobile app loads and executes the bundled TFLite model through
+`react-native-fast-tflite`. The separate `irads-mobile` recorder remains a
+legacy recording prototype.
 
 ## 4. Backend API
 
@@ -152,7 +154,9 @@ The ML code is under `irads-backend/ml`.
 
 `preprocessing/loader.py` loads CSV files from `ml/data/raw`, validates required columns, and records the source filename.
 
-The required training fields include timestamp, six IMU features, and label.
+The required training fields include timestamp, six raw IMU features, and
+label; the preprocessing pipeline derives acceleration and gyroscope
+magnitudes as the seventh and eighth model features.
 
 ### Data quality tools
 
@@ -173,16 +177,19 @@ The required training fields include timestamp, six IMU features, and label.
 
 `preprocessing/windowing.py` converts recordings into overlapping windows:
 
-- Window size: 50 samples.
-- Step size: 25 samples.
-- Features: accelerometer X/Y/Z and gyroscope X/Y/Z.
-- Output classes: NORMAL, BUMP, POTHOLE, SPEED_BREAKER.
+- Window size: 20 samples.
+- Normal windows use a 10-sample step; anomaly windows use a 2-sample step.
+- Features: accelerometer X/Y/Z, gyroscope X/Y/Z, acceleration magnitude,
+  and gyroscope magnitude.
+- Output classes: NORMAL, POTHOLE, SPEED_BREAKER.
 
 Windows are created independently for each source recording so they do not cross recording boundaries.
 
 ### Normalization and dataset splitting
 
-`preprocessing/normalizer.py` standardizes the six IMU features using mean and standard deviation calculated from training data only. Parameters are saved to `ml/models/normalization.json`.
+`preprocessing/normalizer.py` standardizes the eight IMU features using mean
+and standard deviation calculated from training data only. Parameters are
+saved to `ml/models/normalization.json` and copied to the mobile bundle.
 
 `training/dataset.py` performs stratified splitting into:
 
@@ -196,13 +203,13 @@ It also encodes labels as numeric class indexes.
 
 `training/model.py` defines a TensorFlow 1D convolutional neural network:
 
-- Input shape: 50 samples by 6 features.
+- Input shape: 20 samples by 8 features.
 - Three convolutional stages.
 - Batch normalization.
 - Max pooling.
 - Global average pooling.
 - Dense layer with dropout.
-- Four-class softmax output.
+- Three-class softmax output: NORMAL, POTHOLE, SPEED_BREAKER.
 
 `training/train.py`:
 
@@ -228,7 +235,7 @@ Available model files under `ml/models` are:
 - `irads_model.tflite`
 - `normalization.json`
 
-`inference/predict.py` performs Keras inference for one normalized 50-by-6 window.
+`inference/predict.py` performs Keras inference for one normalized 20-by-8 window.
 
 `inference/convert_tflite.py` converts the best Keras model to TFLite.
 
@@ -260,7 +267,7 @@ Authenticated anomaly JSON
 ```text
 Raw training CSV files
     -> preprocessing
-    -> 50-sample windows
+    -> 20-sample windows
     -> normalization
     -> CNN training
     -> Keras/TFLite model
@@ -270,12 +277,12 @@ There is no current code connecting the mobile CSV recorder to the FastAPI servi
 
 ## 9. Known Gaps and Risks
 
-- The mobile app does not upload recordings to the backend.
+- The legacy `irads-mobile` recorder does not upload recordings to the backend.
 - The mobile CSV format differs from the backend anomaly-event JSON format.
-- The backend does not currently invoke the ML model.
+- The backend does not invoke the ML model; inference runs on the root mobile
+  app before authenticated event upload.
 - No clustering process populates `confirmed_anomalies`.
 - No alert-generation or road-health dashboard workflow is implemented.
-- The TFLite package is installed in the app but unused.
 - Development fallback values exist for JWT and database credentials.
 - The API database default port is `5432`, while the consumer defaults to `5433`.
 - The windowing module defines a minimum anomaly sample threshold, but its final label-selection logic currently labels a window when an anomaly label appears regardless of that threshold.

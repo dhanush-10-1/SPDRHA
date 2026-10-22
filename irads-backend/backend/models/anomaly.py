@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field, validator
 class AnomalyType(str, Enum):
     POTHOLE = "POTHOLE"
     SPEED_BREAKER = "SPEED_BREAKER"
-    BUMP = "BUMP"
 
 
 class AnomalyCreate(BaseModel):

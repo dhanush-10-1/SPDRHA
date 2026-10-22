@@ -6,7 +6,21 @@ import { getDeviceIdHash } from '../storage/deviceIdentity';
 import { syncService } from '../storage/syncService';
 import { TFLiteInferenceEngine } from './tflite_inference';
 import { IMUWindow, Prediction } from './types';
+import { AnomalyPersistencePolicy } from './anomalyPersistencePolicy';
+import { InferenceLifecycle } from './inferenceLifecycle';
 import { WindowManager } from './windowManager';
+
+type InferenceEngine = Pick<
+  TFLiteInferenceEngine,
+  'initialize' | 'predict'
+>;
+
+type SaveAnomalyEvent = typeof saveAnomalyEvent;
+
+type InferenceInput = {
+  window: IMUWindow;
+  reading: SensorReading;
+};
 
 function isAnomalyPrediction(
   prediction: Prediction,
@@ -21,15 +35,30 @@ function isAnomalyPrediction(
 
 export class AIService {
   private windowManager = new WindowManager();
-  private inferenceEngine = new TFLiteInferenceEngine();
+  private inferenceEngine: InferenceEngine;
+  private saveEvent: SaveAnomalyEvent;
+  private startSync: () => Promise<void>;
 
-  private inferenceRunning = false;
+  private inferenceLifecycle = new InferenceLifecycle<
+    InferenceInput,
+    Prediction | null
+  >();
   private deviceIdHash: string | null = null;
 
-  // Prevent multiple anomaly events from being created
-  // for the same physical disturbance.
-  private lastAnomalyAt = 0;
-  private readonly ANOMALY_COOLDOWN_MS = 2000;
+  private persistencePolicy = new AnomalyPersistencePolicy();
+
+  constructor(
+    inferenceEngine: InferenceEngine = new TFLiteInferenceEngine(),
+    saveEvent: SaveAnomalyEvent = saveAnomalyEvent,
+    startSync: () => Promise<void> = () =>
+      syncService.syncPendingEvents(),
+    initialDeviceIdHash: string | null = null,
+  ) {
+    this.inferenceEngine = inferenceEngine;
+    this.saveEvent = saveEvent;
+    this.startSync = startSync;
+    this.deviceIdHash = initialDeviceIdHash;
+  }
 
   async initialize(): Promise<void> {
     await this.inferenceEngine.initialize();
@@ -45,48 +74,64 @@ export class AIService {
       return null;
     }
 
-    if (this.inferenceRunning) {
+    return this.inferenceLifecycle.submit(
+      { window, reading },
+      (input, generation) =>
+        this.runInference(
+          input.window,
+          input.reading,
+          generation,
+        ),
+    );
+  }
+
+  private async runInference(
+    window: IMUWindow,
+    reading: SensorReading,
+    generation: number,
+  ): Promise<Prediction | null> {
+    let prediction: Prediction | null = null;
+
+    prediction = await this.inferenceEngine.predict(window);
+
+    if (!this.inferenceLifecycle.isCurrent(generation)) {
       return null;
     }
 
-    this.inferenceRunning = true;
-
-    try {
-      const prediction =
-        await this.inferenceEngine.predict(window);
+    if (
+      prediction !== null &&
+      isAnomalyPrediction(prediction)
+    ) {
+      const now = Date.now();
 
       if (
-        prediction !== null &&
-        isAnomalyPrediction(prediction)
+      !this.persistencePolicy.shouldPersist(
+        prediction,
+        reading.gps !== null,
+        now,
+      )
       ) {
-        const now = Date.now();
-
-        // Ignore anomaly predictions while cooldown is active.
-        if (
-          now - this.lastAnomalyAt <
-          this.ANOMALY_COOLDOWN_MS
-        ) {
-          console.log(
-            'Anomaly ignored: cooldown active.',
-          );
-
-          return prediction;
-        }
-
-        // Start cooldown before saving the event.
-        this.lastAnomalyAt = now;
-
-        await this.savePrediction(
-          prediction,
-          reading,
-          window,
-        );
-      }
+      console.log(
+        reading.gps === null
+          ? 'Anomaly ignored: GPS unavailable.'
+          : 'Anomaly ignored: cooldown active.',
+      );
 
       return prediction;
-    } finally {
-      this.inferenceRunning = false;
+      }
+
+      const persisted = await this.savePrediction(
+        prediction,
+        reading,
+        window,
+      );
+
+      if (persisted) {
+        this.persistencePolicy.markPersisted(now);
+      }
     }
+
+    return prediction;
   }
 
   private async savePrediction(
@@ -95,20 +140,20 @@ export class AIService {
     },
     reading: SensorReading,
     window: IMUWindow,
-  ): Promise<void> {
-    if (this.deviceIdHash === null) {
-      throw new Error(
-        'Device identity is not initialized.',
-      );
-    }
-
+  ): Promise<boolean> {
     const gps = reading.gps;
 
     if (gps === null) {
       console.warn(
         'Anomaly detected but GPS is unavailable. Event was not saved.',
       );
-      return;
+      return false;
+    }
+
+    if (this.deviceIdHash === null) {
+      throw new Error(
+        'Device identity is not initialized.',
+      );
     }
 
     /*
@@ -119,7 +164,7 @@ export class AIService {
       ...window.map((sample) => Math.abs(sample[2])),
     );
 
-    await saveAnomalyEvent({
+    await this.saveEvent({
       id: Crypto.randomUUID(),
 
       type: prediction.type,
@@ -147,13 +192,20 @@ export class AIService {
      * Start synchronization without blocking
      * the sensor/inference loop.
      */
-    void syncService.syncPendingEvents();
+    void this.startSync().catch((error) => {
+      console.warn(
+        'Anomaly synchronization failed:',
+        error,
+      );
+    });
+
+    return true;
   }
 
   reset(): void {
+    this.inferenceLifecycle.reset();
     this.windowManager.reset();
-    this.inferenceRunning = false;
-    this.lastAnomalyAt = 0;
+    this.persistencePolicy.reset();
   }
 
   get windowSize(): number {

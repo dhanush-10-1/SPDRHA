@@ -12,8 +12,7 @@ RAW_DIR = BASE_DIR / "data" / "raw"
 
 OUTPUT_DIR = BASE_DIR / "data" / "training"
 
-WINDOW_SIZE = 50
-STEP_SIZE = 25
+WINDOW_SIZE = 20
 
 FEATURE_COLUMNS = [
     "acc_x",
@@ -22,6 +21,8 @@ FEATURE_COLUMNS = [
     "gyro_x",
     "gyro_y",
     "gyro_z",
+    "acc_mag",
+    "gyro_mag",
 ]
 
 VALID_LABELS = {
@@ -256,6 +257,17 @@ for raw_file in raw_files:
 
 
         # ----------------------------------------------------
+        window["acc_mag"] = (
+            window["acc_x"] ** 2
+            + window["acc_y"] ** 2
+            + window["acc_z"] ** 2
+        ) ** 0.5
+        window["gyro_mag"] = (
+            window["gyro_x"] ** 2
+            + window["gyro_y"] ** 2
+            + window["gyro_z"] ** 2
+        ) ** 0.5
+
         # Keep only CNN sensor features
         # ----------------------------------------------------
 

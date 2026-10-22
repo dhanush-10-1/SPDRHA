@@ -5,28 +5,21 @@ from ml.preprocessing.windowing import create_windows
 
 
 MAX_GAP_MS = 100
-WINDOW_SIZE = 50
-STEP_SIZE = 25
+WINDOW_SIZE = 20
 
 
 def remove_exact_duplicates(df):
     """
-    Remove completely duplicated sensor observations.
+    Remove duplicate observations from each recording.
 
-    We only remove rows that are identical across the relevant
-    sensor fields. Rows with the same timestamp but different
-    sensor values are retained.
+    Mobile sampling accepts only strictly increasing timestamps, so a
+    repeated timestamp is not a distinct chronological observation even
+    when its sensor values differ. Keep the first row deterministically.
     """
 
     sensor_columns = [
         "source_file",
         "timestamp",
-        "acc_x",
-        "acc_y",
-        "acc_z",
-        "gyro_x",
-        "gyro_y",
-        "gyro_z",
     ]
 
     before = len(df)
@@ -121,7 +114,7 @@ def create_continuous_segments(df):
 def create_training_windows(segments):
     """
     Convert continuous sensor segments into
-    50-sample × 6-feature windows.
+    20-sample × 8-feature windows.
     """
 
     all_X = []
@@ -132,7 +125,6 @@ def create_training_windows(segments):
         X, y = create_windows(
             segment,
             window_size=WINDOW_SIZE,
-            step_size=STEP_SIZE,
         )
 
         if len(X) == 0:

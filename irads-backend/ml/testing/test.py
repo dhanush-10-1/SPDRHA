@@ -35,8 +35,8 @@ DATA_DIR = (
 # CONFIGURATION
 # ============================================================
 
-WINDOW_SIZE = 50
-STEP_SIZE = 25
+WINDOW_SIZE = 20
+STEP_SIZE = 10
 
 FEATURE_COLUMNS = [
     "acc_x",
@@ -45,6 +45,8 @@ FEATURE_COLUMNS = [
     "gyro_x",
     "gyro_y",
     "gyro_z",
+    "acc_mag",
+    "gyro_mag",
 ]
 
 CLASS_NAMES = [
@@ -155,11 +157,18 @@ def load_csv(file_path):
 
 def create_windows(df):
 
-    values = df[
-        FEATURE_COLUMNS
-    ].to_numpy(
-        dtype=np.float32
+    values = df.copy()
+    values["acc_mag"] = np.sqrt(
+        values["acc_x"] ** 2
+        + values["acc_y"] ** 2
+        + values["acc_z"] ** 2
     )
+    values["gyro_mag"] = np.sqrt(
+        values["gyro_x"] ** 2
+        + values["gyro_y"] ** 2
+        + values["gyro_z"] ** 2
+    )
+    values = values[FEATURE_COLUMNS].to_numpy(dtype=np.float32)
 
     windows = []
 
@@ -225,7 +234,7 @@ def predict_windows(
     for window in windows:
 
         # Model expects:
-        # (1, 50, 6)
+        # (1, 20, 8)
 
         input_data = np.expand_dims(
             window,
@@ -441,7 +450,7 @@ if __name__ == "__main__":
     # --------------------------------------------------------
 
     print(
-        "\nCreating 50-sample windows..."
+        "\nCreating 20-sample windows..."
     )
 
     windows = create_windows(
@@ -457,7 +466,7 @@ if __name__ == "__main__":
 
         raise ValueError(
             "Not enough data to create "
-            "a 50-sample window."
+            "a 20-sample window."
         )
 
     # --------------------------------------------------------

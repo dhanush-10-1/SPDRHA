@@ -40,7 +40,7 @@ type Coordinate = {
 type Hazard = Coordinate & {
   id: string;
   intensity: number;
-  type: "POTHOLE" | "SPEED_BREAKER" | "BUMP";
+  type: "POTHOLE" | "SPEED_BREAKER";
   confidence: number;
 };
 
@@ -49,7 +49,7 @@ type NearbyAnomaliesResponse = {
   radius_m: number;
   anomalies: Array<{
     id: string;
-    type: "POTHOLE" | "SPEED_BREAKER" | "BUMP";
+    type: "POTHOLE" | "SPEED_BREAKER";
     confidence: number;
     latitude: number;
     longitude: number;
@@ -67,7 +67,7 @@ type NearbyAnomaliesResponse = {
 
 // FastAPI running on the same computer.
 // For a physical phone, replace this with your computer's LAN IP.
-const API_BASE_URL = "http://127.0.0.1:8001";
+const API_BASE_URL = "http://10.216.109.50:8001";
 
 // Search radius for nearby road anomalies.
 const SEARCH_RADIUS_METERS = 10000;
@@ -396,7 +396,7 @@ export default function App() {
               Number.isFinite(Number(anomaly.latitude)) &&
               Number.isFinite(Number(anomaly.longitude)) &&
               Number.isFinite(Number(anomaly.confidence)) &&
-              ["POTHOLE", "SPEED_BREAKER", "BUMP"].includes(
+              ["POTHOLE", "SPEED_BREAKER"].includes(
                 anomaly.type
               )
           )

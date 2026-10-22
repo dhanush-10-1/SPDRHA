@@ -1,28 +1,64 @@
 import { IMUWindow } from './types';
 
-const MEAN = [
-  -0.019452420994639397,
-  0.2897146940231323,
-  0.8551404476165771,
-  0.000534393941052258,
-  0.003778090002015233,
-  0.003882150398567319,
+type NormalizationData = {
+  features: string[];
+  mean: number[];
+  std: number[];
+};
+
+const NORMALIZATION =
+  require('../../assets/models/normalization.json') as NormalizationData;
+
+const EXPECTED_FEATURES = [
+  'acc_x',
+  'acc_y',
+  'acc_z',
+  'gyro_x',
+  'gyro_y',
+  'gyro_z',
+  'acc_mag',
+  'gyro_mag',
 ];
 
-const STD = [
-  0.1723574995994568,
-  0.4057551622390747,
-  0.41313475370407104,
-  2.6464433670043945,
-  1.117576241493225,
-  1.0240119695663452,
-];
+if (
+  JSON.stringify(NORMALIZATION.features) !==
+  JSON.stringify(EXPECTED_FEATURES)
+) {
+  throw new Error(
+    'Normalization feature order does not match the model contract.',
+  );
+}
+
+if (
+  NORMALIZATION.mean.length !== EXPECTED_FEATURES.length ||
+  NORMALIZATION.std.length !== EXPECTED_FEATURES.length ||
+  NORMALIZATION.std.some(
+    (value) => !Number.isFinite(value) || value <= 0,
+  ) ||
+  NORMALIZATION.mean.some(
+    (value) => !Number.isFinite(value),
+  )
+) {
+  throw new Error(
+    'Normalization parameters do not match the model contract.',
+  );
+}
 
 export function normalizeWindow(window: IMUWindow): IMUWindow {
+  if (window.length !== 20) {
+    throw new Error(
+      `Invalid window size: expected 20, got ${window.length}`,
+    );
+  }
+
   return window.map((sample) =>
-    sample.map((value, featureIndex) =>
-      (value - MEAN[featureIndex]) / STD[featureIndex],
+    sample.map(
+      (value, featureIndex) =>
+        (value - NORMALIZATION.mean[featureIndex]) /
+        NORMALIZATION.std[featureIndex],
     ) as [
+      number,
+      number,
       number,
       number,
       number,

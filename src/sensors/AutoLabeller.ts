@@ -9,7 +9,6 @@ export function getAutoLabel(acc_x: number, acc_y: number, acc_z: number): strin
 
   if (deviation < -0.5) return 'POTHOLE';
   if (deviation > 0.6) return 'SPEED_BREAKER';
-  if (Math.abs(deviation) > 0.15) return 'BUMP';
 
   return 'NORMAL';
 }

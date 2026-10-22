@@ -1,0 +1,40 @@
+﻿# Git history
+.git/
+
+# Node dependencies
+node_modules/
+
+# Python environments and caches
+.venv/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc/
+**/.pytest_cache/
+**/.mypy_cache/
+
+# Environment files and logs
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+
+# Generated outputs
+dist/
+coverage/
+.expo/web/
+**/tmp/
+**/temp/
+
+# Legacy prototype and backend are not part of the Android app
+/irads-mobile/
+/irads-backend/
+
+# Generated native Android build artifacts
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/app/.cxx/

@@ -57,6 +57,7 @@ type LabelCounts = {
 
 const emptyReading = (): SensorReading => ({
   timestamp: Date.now(),
+  sensorTimestampMs: Date.now(),
   acc: {
     x: 0,
     y: 0,

@@ -1,8 +1,9 @@
 import { Accelerometer, Gyroscope } from "expo-sensors";
 
 export const MINIMUM_SPEED_KMH = 5;
-export const SENSOR_WINDOW_SIZE = 50;
+export const SENSOR_WINDOW_SIZE = 20;
 export const MAX_GPS_ACCURACY_METERS = 20;
+export const SENSOR_INTERVAL_MS = 33;
 
 export type SensorSample = {
   timestamp: number;
@@ -69,8 +70,8 @@ export function checkSpeedGate(
 export function startRoadSensorCollection(
   onSample: (sample: SensorSample) => void,
 ): () => void {
-  Accelerometer.setUpdateInterval(20);
-  Gyroscope.setUpdateInterval(20);
+  Accelerometer.setUpdateInterval(SENSOR_INTERVAL_MS);
+  Gyroscope.setUpdateInterval(SENSOR_INTERVAL_MS);
 
   let latestRotation = { x: 0, y: 0, z: 0 };
 

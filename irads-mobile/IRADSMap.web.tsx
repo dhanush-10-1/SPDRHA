@@ -19,7 +19,7 @@ type Coordinate = {
 type Hazard = Coordinate & {
   id: string;
   intensity: number;
-  type?: "POTHOLE" | "SPEED_BREAKER" | "BUMP";
+  type?: "POTHOLE" | "SPEED_BREAKER";
   confidence?: number;
 };
 

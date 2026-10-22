@@ -78,7 +78,7 @@ def validate_event(event: dict) -> dict:
 
     anomaly_type = event["type"]
 
-    if anomaly_type not in {"POTHOLE", "SPEED_BREAKER", "BUMP"}:
+    if anomaly_type not in {"POTHOLE", "SPEED_BREAKER"}:
         raise ValueError("Unsupported anomaly type")
 
     def finite_number(field):
