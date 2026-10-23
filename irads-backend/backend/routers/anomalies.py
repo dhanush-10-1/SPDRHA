@@ -1,14 +1,22 @@
 import redis.asyncio as redis
 import os
+import json
+
+from fastapi import Body
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import Literal
 from uuid import UUID
 
+
 from backend.auth.jwt import get_current_device
 from backend.db.connection import get_pool
 from backend.kafka.producer import publish
 from backend.models.anomaly import AnomalyCreate, AnomalyReceived
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -252,5 +260,146 @@ async def get_nearby_raw_anomalies(
     return {
         "count": len(anomalies),
         "radius_m": radius_m,
+        "anomalies": anomalies,
+    }
+
+@router.post("/api/v1/anomalies/along-route")
+async def get_anomalies_along_route(
+    route_coordinates: list[list[float]] = Body(
+        ...,
+        description="Route coordinates as [longitude, latitude] pairs",
+        min_length=2,
+    ),
+    corridor_m: float = Query(15.0, gt=0, le=100),
+    anomaly_type: Literal[
+        "POTHOLE",
+        "SPEED_BREAKER",
+    ] | None = None,
+):
+    """
+    Return active confirmed anomalies close to the selected route.
+
+    Coordinate format:
+        [[longitude, latitude], [longitude, latitude], ...]
+    """
+
+    pool = get_pool()
+
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection unavailable",
+        )
+
+    # Validate route coordinates before querying PostGIS.
+    if len(route_coordinates) > 10000:
+        raise HTTPException(
+            status_code=400,
+            detail="Route contains too many coordinates",
+        )
+
+    for coordinate in route_coordinates:
+        if len(coordinate) != 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Each coordinate must be [longitude, latitude]",
+            )
+
+        longitude, latitude = coordinate
+
+        if not (-180 <= longitude <= 180):
+            raise HTTPException(
+                status_code=400,
+                detail="Longitude must be between -180 and 180",
+            )
+
+        if not (-90 <= latitude <= 90):
+            raise HTTPException(
+                status_code=400,
+                detail="Latitude must be between -90 and 90",
+            )
+
+    query = """
+        WITH selected_route AS (
+            SELECT ST_SetSRID(
+                ST_MakeLine(
+                    ARRAY(
+                        SELECT ST_SetSRID(
+                            ST_MakePoint(
+                                (coordinate->>0)::DOUBLE PRECISION,
+                                (coordinate->>1)::DOUBLE PRECISION
+                            ),
+                            4326
+                        )
+                        FROM json_array_elements($1::JSON) AS coordinate
+                    )
+                ),
+                4326
+            )::geography AS route
+        )
+        SELECT
+            anomaly.id,
+            anomaly.type,
+            anomaly.severity,
+            anomaly.confidence_avg AS confidence,
+            anomaly.report_count,
+            ST_Y(anomaly.location::geometry) AS latitude,
+            ST_X(anomaly.location::geometry) AS longitude,
+            ST_Distance(
+                anomaly.location,
+                selected_route.route
+            ) AS distance_to_route_m,
+            anomaly.last_seen
+        FROM confirmed_anomalies AS anomaly
+        CROSS JOIN selected_route
+        WHERE anomaly.is_active = TRUE
+          AND ST_DWithin(
+              anomaly.location,
+              selected_route.route,
+              $2
+          )
+          AND ($3::VARCHAR IS NULL OR anomaly.type = $3)
+        ORDER BY distance_to_route_m ASC
+        LIMIT 1000
+    """
+
+    try:
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                query,
+                json.dumps(route_coordinates),
+                corridor_m,
+                anomaly_type,
+            )
+
+    except Exception as exc:
+        logger.exception("Route anomaly query failed")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve route anomalies",
+        ) from exc
+
+    anomalies = [
+        {
+            "id": str(row["id"]),
+            "type": row["type"],
+            "severity": row["severity"],
+            "confidence": row["confidence"],
+            "report_count": row["report_count"],
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "distance_to_route_m": row["distance_to_route_m"],
+            "last_seen": (
+                row["last_seen"].isoformat()
+                if row["last_seen"] else None
+            ),
+        }
+        for row in rows
+    ]
+
+    return {
+        "count": len(anomalies),
+        "corridor_m": corridor_m,
         "anomalies": anomalies,
     }

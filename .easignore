@@ -29,7 +29,6 @@ coverage/
 **/temp/
 
 # Legacy prototype and backend are not part of the Android app
-/irads-mobile/
 /irads-backend/
 
 # Generated native Android build artifacts
@@ -38,3 +37,17 @@ coverage/
 /android/build/
 /android/app/build/
 /android/app/.cxx/
+/irads-mobile/eas-archive-inspect/
+/irads-mobile/backups/
+/irads-mobile/irads_ml_integration_patch/
+/irads-mobile/node_modules/
+/irads-mobile/.expo/
+/irads-mobile/dist/
+/irads-mobile/web-build/
+/irads-mobile/android/.gradle/
+/irads-mobile/android/.kotlin/
+/irads-mobile/android/build/
+/irads-mobile/android/app/build/
+/irads-mobile/android/app/.cxx/
+/irads-mobile/release-build.log
+/irads-mobile/eas-build-view.json

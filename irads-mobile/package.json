@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~57.0.27",
+    "expo-crypto": "~57.0.4",
     "expo-dev-client": "~57.0.19",
     "expo-location": "~57.0.20",
     "expo-sensors": "~57.0.3",
@@ -14,7 +16,9 @@
     "react-dom": "19.2.3",
     "react-leaflet": "^5.0.0",
     "react-native": "0.86.3",
+    "react-native-fast-tflite": "github:margelo/react-native-fast-tflite#81a94f6bc713335f70fbcce525c00017edc158b1",
     "react-native-maps": "1.27.2",
+    "react-native-nitro-modules": "^0.37.1",
     "react-native-web": "^0.21.2"
   },
   "devDependencies": {
