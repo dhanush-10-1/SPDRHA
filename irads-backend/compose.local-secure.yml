@@ -1,0 +1,17 @@
+﻿services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:5433:5432"
+  kafka:
+    ports: !override
+      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:29092:29092"
+  redis:
+    ports: !override
+      - "127.0.0.1:6379:6379"
+  zookeeper:
+    ports: !override
+      - "127.0.0.1:2181:2181"
+  kafka-ui:
+    ports: !override
+      - "127.0.0.1:8888:8080"

@@ -10,7 +10,7 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "irads")
 DB_USER = os.getenv("DB_USER", "irads_user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "irads_pass_2024")
+DB_PASSWORD = os.environ["DB_PASSWORD"]
 DB_MIN_SIZE = int(os.getenv("DB_MIN_SIZE", "2"))
 DB_MAX_SIZE = int(os.getenv("DB_MAX_SIZE", "10"))
 

@@ -1,4 +1,4 @@
-import redis.asyncio as redis
+﻿import redis.asyncio as redis
 import os
 import json
 
@@ -25,6 +25,7 @@ async def get_redis_client() -> redis.Redis:
     return redis.Redis(
         host=os.getenv("REDIS_HOST", "127.0.0.1"),
         port=int(os.getenv("REDIS_PORT", "6379")),
+        password=os.getenv("REDIS_PASSWORD") or None,
         decode_responses=True,
     )
 
@@ -63,6 +64,12 @@ async def create_anomaly(
     payload: AnomalyCreate,
     current_device: dict = Depends(get_current_device),
 ):
+    if current_device.get("device_id") != payload.device_id_hash:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Device identity does not match authenticated token",
+        )
+
     await rate_limit_exceeded(payload.device_id_hash)
 
     event = payload.model_dump()

@@ -1,3 +1,6 @@
+﻿import os
+
+import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException
 
 from backend.db.connection import get_pool
@@ -6,48 +9,55 @@ from backend.kafka.producer import get_producer
 router = APIRouter()
 
 
+@router.get("/healthz")
+async def liveness_check():
+    return {"status": "ok"}
+
+
 @router.get("/health")
 async def health_check():
-    postgres_status = "error"
-    kafka_status = "error"
-    redis_status = "error"
+    status = {
+        "postgres": "error",
+        "kafka": "error",
+        "redis": "error",
+    }
 
     pool = get_pool()
     if pool is not None:
         try:
             async with pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-            postgres_status = "ok"
+                await conn.fetchval("SELECT 1", timeout=5)
+            status["postgres"] = "ok"
         except Exception:
-            postgres_status = "error"
+            pass
 
     producer = get_producer()
     if producer is not None:
         try:
             await producer.client.check_version()
-            kafka_status = "ok"
+            status["kafka"] = "ok"
         except Exception:
-            kafka_status = "error"
+            pass
+
+    redis_client = redis.Redis(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", "6379")),
+        db=int(os.getenv("REDIS_DB", "0")),
+        password=os.getenv("REDIS_PASSWORD") or None,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+    )
 
     try:
-        import redis.asyncio as redis
-        from dotenv import load_dotenv
-        import os
-
-        load_dotenv()
-        redis_client = redis.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", "6379")),
-            db=int(os.getenv("REDIS_DB", "0")),
-            decode_responses=True,
-        )
         await redis_client.ping()
-        redis_status = "ok"
+        status["redis"] = "ok"
     except Exception:
-        redis_status = "error"
+        pass
+    finally:
+        await redis_client.aclose()
 
-    return {
-        "postgres": postgres_status,
-        "kafka": kafka_status,
-        "redis": redis_status,
-    }
+    if any(value != "ok" for value in status.values()):
+        raise HTTPException(status_code=503, detail=status)
+
+    return status

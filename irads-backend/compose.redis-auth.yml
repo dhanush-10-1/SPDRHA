@@ -1,0 +1,8 @@
+﻿services:
+  redis:
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - type: bind
+        source: C:/Users/dhanu/SPDRHA/irads-private/redis.conf
+        target: /usr/local/etc/redis/redis.conf
+        read_only: true

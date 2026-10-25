@@ -1,0 +1,8 @@
+﻿services:
+  redis:
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --raw ping 2>&1 | grep -q 'NOAUTH Authentication required'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
