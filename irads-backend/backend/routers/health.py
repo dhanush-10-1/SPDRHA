@@ -34,7 +34,11 @@ async def health_check():
     producer = get_producer()
     if producer is not None:
         try:
-            await producer.client.check_version()
+            partitions = await producer.partitions_for(
+                os.getenv("KAFKA_TOPIC", "raw_anomaly_events")
+            )
+            if not partitions:
+                raise RuntimeError("Kafka topic has no available partitions")
             status["kafka"] = "ok"
         except Exception as exc:
             print(
