@@ -1,4 +1,4 @@
-﻿"""Start private networking before the real IRADS FastAPI application."""
+"""Start private networking before the real IRADS FastAPI application."""
 import asyncio
 import os
 from pathlib import Path
@@ -17,7 +17,13 @@ async def main():
     keyfile = Path(os.getenv("TAILSCALE_AUTHKEY_FILE", "/etc/secrets/tailscale-authkey"))
 
     if not keyfile.is_file():
-        raise RuntimeError("Real backend Tailscale secret file is missing")
+        authkey = os.getenv("TS_AUTHKEY", "").strip()
+        if not authkey:
+            raise RuntimeError("Tailscale auth key is not configured")
+        keyfile = Path("/tmp/irads-real-authkey")
+        keyfile.write_text(authkey + "\n", encoding="utf-8")
+        keyfile.chmod(0o600)
+        del authkey
 
     port = int(os.getenv("PORT", "10000"))
     if not 1 <= port <= 65535 or port in (*PORTS, 1055):
