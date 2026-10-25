@@ -15,7 +15,7 @@ try {
     $Headers = @{ 'X-POC-Token' = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($TokenPtr) }
     $Method = if ($Delivery) { 'Post' } else { 'Get' }
     $Result = Invoke-RestMethod -Uri ($BaseUrl.AbsoluteUri.TrimEnd('/') + '/probe') `
-        -Method $Method -Headers $Headers -TimeoutSec 180 -MaximumRedirection 0
+        -Method $Method -Headers $Headers -TimeoutSec 180 -MaximumRedirection 0 -DisableKeepAlive
     $Result | ConvertTo-Json -Depth 8
     foreach ($Check in $Result.checks.PSObject.Properties) {
         if ($Check.Value.status -ne 'ok') { throw ('Failed check: ' + $Check.Name) }

@@ -45,7 +45,7 @@ services:
     networks: [poc]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "cub zk-ready localhost 2181 5"]
+      test: ["CMD-SHELL", "cub zk-ready localhost:2181 5"]
       interval: 10s
       timeout: 8s
       retries: 20
@@ -104,7 +104,7 @@ services:
 
 networks:
   poc:
-    internal: true
+    internal: false
 volumes:
   poc_postgres:
     name: irads_render_poc_postgres_v1
