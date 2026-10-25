@@ -1,4 +1,4 @@
-﻿import os
+import os
 
 import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException
@@ -36,8 +36,11 @@ async def health_check():
         try:
             await producer.client.check_version()
             status["kafka"] = "ok"
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"Kafka health check failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
     redis_client = redis.Redis(
         host=os.getenv("REDIS_HOST", "localhost"),
