@@ -5,5 +5,24 @@
     "baseUrl": ".",
     "ignoreDeprecations": "6.0"
   },
-  "include": ["**/*.ts", "**/*.tsx"]
+  "include": [
+    "App.tsx",
+    "index.ts",
+    "IRADSMap.tsx",
+    "IRADSMap.native.tsx",
+    "IRADSMap.web.tsx",
+    "sensors/**/*.ts",
+    "sensors/**/*.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "declarations.d.ts",
+    "expo-env.d.ts",
+    ".expo/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "eas-archive-inspect",
+    "android",
+    "ios"
+  ]
 }

@@ -1,4 +1,4 @@
-import React, {
+﻿import React, {
   useCallback,
   useEffect,
   useRef,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   AppState,
   Alert,
+  Modal,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -27,6 +28,7 @@ import {
   MAX_GPS_ACCURACY_METERS,
 } from "./sensors/roadSensor";
 import * as Location from "expo-location";
+import * as Speech from "expo-speech";
 import IRADSMap from "./IRADSMap";
 import { AIService } from "./src/ai/aiService";
 import type { SensorReading } from "./src/sensors/types";
@@ -185,6 +187,16 @@ function projectOntoRoute(
 // Keep reports very close to the blue route line to avoid alerting for nearby
 // roads. A small tolerance is necessary because phone GPS and report locations
 // are not perfectly accurate.
+function calculateRouteLength(route: Coordinate[]): number {
+  let total = 0;
+  for (let i = 1; i < route.length; i++) {
+    total += distanceMeters(route[i - 1], route[i]);
+  }
+  return total;
+}
+
+const POTHOLE_ALERT_DISTANCE_METERS = 100;
+const MAX_RIDER_ROUTE_OFFSET_METERS = 30;
 const ROUTE_CORRIDOR_METERS = 15;
 const ROUTE_PROGRESS_TOLERANCE_METERS = 10;
 
@@ -229,8 +241,16 @@ export default function App() {
   const [nearbyConfirmedHazards, setNearbyConfirmedHazards] = useState<Hazard[]>([]);
 
   const [showHeatmap, setShowHeatmap] = useState(true);
+  const [settingsVisible, setSettingsVisible] = useState(false);
   const [routeSelected, setRouteSelected] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
+  const [navigationProgress, setNavigationProgress] = useState({
+    completedMeters: 0,
+    remainingMeters: 0,
+    percentage: 0,
+  });
+  const [navigationOnRoute, setNavigationOnRoute] = useState(false);
+  const alertedHazardsRef = useRef<Set<string>>(new Set());
   const [recenterRequest, setRecenterRequest] = useState(0);
 
   const [loadingLocation, setLoadingLocation] = useState(true);
@@ -500,7 +520,7 @@ export default function App() {
 
         aiServiceRef.current = service;
         setAiStatus(
-          `Model ready. Waiting for ${SENSOR_WINDOW_SIZE} sensor samples at speed â‰¥ 5 km/h.`,
+          `Model ready. Waiting for ${SENSOR_WINDOW_SIZE} sensor samples at speed >= 5 km/h.`,
         );
         console.log("IRADS TFLite model initialized.");
 
@@ -819,6 +839,8 @@ export default function App() {
     [],
   );
 
+  const lastNearbyFetchLocationRef = useRef<Coordinate | null>(null);
+
   // Before a route is selected, preserve the existing nearby-raw-report map.
   // While a route is selected, the separate effect below owns hazard fetching.
   useEffect(() => {
@@ -841,6 +863,9 @@ export default function App() {
       return;
     }
 
+    const previous = lastNearbyFetchLocationRef.current;
+    if (previous && distanceMeters(previous, currentLocation) < 150) return;
+    lastNearbyFetchLocationRef.current = currentLocation;
     void fetchNearbyHazards(currentLocation);
   }, [currentLocation, loadingLocation, routeSelected, fetchNearbyHazards]);
 
@@ -851,6 +876,58 @@ export default function App() {
     if (!routeSelected || routeCoordinates.length < 2) return;
     void fetchRouteHazards(routeCoordinates);
   }, [routeSelected, routeCoordinates, fetchRouteHazards]);
+
+  // Update progress and warn once per pothole as live GPS changes.
+  // Route geometry is used so nearby roads and hazards behind the rider
+  // do not generate warnings. These are foreground-only alerts.
+  useEffect(() => {
+    if (!isNavigating || !currentLocation || routeCoordinates.length < 2) {
+      setNavigationOnRoute(false);
+      return;
+    }
+
+    const rider = projectOntoRoute(currentLocation, routeCoordinates);
+    if (!rider || rider.distanceToRouteMeters > MAX_RIDER_ROUTE_OFFSET_METERS) {
+      setNavigationOnRoute(false);
+      return;
+    }
+    setNavigationOnRoute(true);
+
+    const total = calculateRouteLength(routeCoordinates);
+    const completed = Math.max(0, Math.min(total, rider.distanceAlongRouteMeters));
+    setNavigationProgress({
+      completedMeters: completed,
+      remainingMeters: Math.max(0, total - completed),
+      percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+    });
+
+    // Do not issue alerts from stale or low-quality GPS fixes.
+    const fix = latestGpsFixRef.current;
+    if (!fix || Date.now() - fix.timestamp > 10000 ||
+        fix.accuracyM === null || fix.accuracyM > 30) return;
+
+    const upcoming = hazards
+      .filter((hazard) => hazard.type === "POTHOLE" &&
+        !alertedHazardsRef.current.has(hazard.id))
+      .map((hazard) => {
+        const projected = projectOntoRoute(hazard, routeCoordinates);
+        if (!projected || projected.distanceToRouteMeters > ROUTE_CORRIDOR_METERS) {
+          return null;
+        }
+        return {
+          id: hazard.id,
+          distanceAhead: projected.distanceAlongRouteMeters - rider.distanceAlongRouteMeters,
+        };
+      })
+      .filter((item): item is { id: string; distanceAhead: number } =>
+        item !== null && item.distanceAhead > 0 &&
+        item.distanceAhead <= POTHOLE_ALERT_DISTANCE_METERS)
+      .sort((a, b) => a.distanceAhead - b.distanceAhead);
+
+    const nearest = upcoming[0];
+    if (!nearest) return;
+    // Voice and vibration alerts will be enabled in a later phase.
+  }, [isNavigating, currentLocation, routeCoordinates, hazards]);
 
   // ----------------------------------------------------------
   // MAP CONFIGURATION
@@ -1144,14 +1221,14 @@ export default function App() {
   }
 
   function formatRouteDistance(meters: number | null) {
-    if (meters === null || !Number.isFinite(meters)) return "â€”";
+    if (meters === null || !Number.isFinite(meters)) return "--";
     return meters >= 1000
       ? `${(meters / 1000).toFixed(1)} km`
       : `${Math.round(meters)} m`;
   }
 
   function formatRouteDuration(seconds: number | null) {
-    if (seconds === null || !Number.isFinite(seconds)) return "â€”";
+    if (seconds === null || !Number.isFinite(seconds)) return "--";
     const minutes = Math.max(1, Math.round(seconds / 60));
     if (minutes < 60) return `${minutes} min`;
     const hours = Math.floor(minutes / 60);
@@ -1173,6 +1250,16 @@ export default function App() {
       return;
     }
 
+    if (!isNavigating) {
+      if (!currentLocation) {
+        showMessage("GPS unavailable", "Wait for your live GPS position before navigating.");
+        return;
+      }
+      alertedHazardsRef.current.clear();
+      setNavigationProgress({ completedMeters: 0, remainingMeters: 0, percentage: 0 });
+    } else if (Platform.OS !== "web") {
+      Speech.stop();
+    }
     setIsNavigating((previous) => !previous);
   }
 
@@ -1197,10 +1284,7 @@ export default function App() {
   // ----------------------------------------------------------
 
   function handleSettings() {
-    showMessage(
-      "Settings",
-      "Nearby anomaly alerts and other preferences will be implemented next."
-    );
+    setSettingsVisible(true);
   }
 
   // ----------------------------------------------------------
@@ -1227,13 +1311,13 @@ export default function App() {
           onPress={handleSettings}
           accessibilityLabel="Settings"
         >
-          <Text style={styles.settingsIcon}>âš™</Text>
+          <Text style={styles.settingsIcon}>{"\u2699\uFE0E"}</Text>
         </TouchableOpacity>
       </View>
 
       {/* Source and destination */}
 
-      <View style={styles.searchPanel}>
+      {!isNavigating ? <View style={styles.searchPanel}>
         <View style={styles.searchRow}>
           <View style={styles.sourceDot} />
 
@@ -1258,6 +1342,10 @@ export default function App() {
             onSubmitEditing={() => void handleSearchSource()}
             accessibilityLabel="Starting location"
           />
+          <View style={styles.speedChip}>
+            <Text style={styles.speedChipValue}>{speedKmh === null ? "--" : speedKmh.toFixed(1)}</Text>
+            <Text style={styles.speedChipUnit}>km/h</Text>
+          </View>
           {source.trim().toLowerCase() === "my location" ? (
             <TouchableOpacity style={styles.sourceActionButton} onPress={handleUseMyLocation}>
               <Text style={styles.sourceActionButtonText}>GPS</Text>
@@ -1302,7 +1390,13 @@ export default function App() {
             <Text style={styles.searchButtonText}>GO</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </View> : null}
+
+      {isNavigating && (
+        <View style={styles.navDestinationBanner}>
+          <Text style={styles.navDestinationText} numberOfLines={1}>Navigating to {destination}</Text>
+        </View>
+      )}
 
       {sourceResults.length > 0 && (
         <View style={styles.destinationResultsPanel}>
@@ -1315,7 +1409,7 @@ export default function App() {
           <TouchableOpacity style={styles.destinationResultItem} onPress={handleUseMyLocation}>
             <Text style={styles.destinationResultName}>Use my current location instead</Text>
           </TouchableOpacity>
-          <Text style={styles.attributionText}>Search data Â© OpenStreetMap contributors</Text>
+          <Text style={styles.attributionText}>Search data © OpenStreetMap contributors</Text>
         </View>
       )}
 
@@ -1341,7 +1435,7 @@ export default function App() {
             </TouchableOpacity>
           ))}
           <Text style={styles.attributionText}>
-            Search data Â© OpenStreetMap contributors
+            Search data © OpenStreetMap contributors
           </Text>
         </View>
       )}
@@ -1349,9 +1443,10 @@ export default function App() {
       {/* Map */}
 
       <View style={styles.mapContainer}>
-        {/* Keep GPS as the map center, but suppress the blue current-location dot. */}
+        {/* Show the live GPS marker and follow the rider while navigating. */}
         <IRADSMapWithDestination
-          currentLocation={null}
+          currentLocation={currentLocation}
+          isNavigating={isNavigating}
           initialCenter={mapCenter}
           routeSelected={routeSelected}
           showHeatmap={showHeatmap}
@@ -1380,13 +1475,51 @@ export default function App() {
           onPress={handleMyLocation}
           accessibilityLabel="Show my location"
         >
-          <Text style={styles.myLocationIcon}>â—Ž</Text>
+          <View style={styles.locationCrosshair}>
+            <View style={styles.crosshairRing} />
+            <View style={styles.crosshairCenter} />
+            <View style={[styles.crosshairTick, styles.crosshairTop]} />
+            <View style={[styles.crosshairTick, styles.crosshairBottom]} />
+            <View style={[styles.crosshairTickHorizontal, styles.crosshairLeft]} />
+            <View style={[styles.crosshairTickHorizontal, styles.crosshairRight]} />
+          </View>
         </TouchableOpacity>
       </View>
 
+      {/* Navigation essentials stay visible without scrolling. */}
+      {isNavigating && routeSelected && (
+        <View style={styles.activeNavigationBar}>
+          <View style={styles.activeNavigationStats}>
+            <View style={styles.activeNavigationMetric}>
+              <Text style={styles.activeNavigationLabel}>DISTANCE LEFT</Text>
+              <Text style={styles.activeNavigationValue}>
+                {navigationOnRoute
+                  ? formatRouteDistance(navigationProgress.remainingMeters)
+                  : "Off route"}
+              </Text>
+            </View>
+            <View style={styles.activeNavigationMetric}>
+              <Text style={styles.activeNavigationLabel}>SPEED</Text>
+              <Text style={styles.activeNavigationValue}>
+                {speedKmh === null ? "--" : speedKmh.toFixed(1)}
+                <Text style={styles.activeNavigationUnit}> km/h</Text>
+              </Text>
+            </View>
+          </View>
+          <TouchableOpacity
+            style={styles.quickStopButton}
+            onPress={handleNavigation}
+            accessibilityRole="button"
+            accessibilityLabel="Stop navigation"
+          >
+            <Text style={styles.quickStopText}>Stop navigation</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Bottom panel */}
 
-      <View style={styles.bottomPanel}>
+      {!isNavigating && <View style={styles.bottomPanel}>
         <View style={styles.heatmapRow}>
           <View style={styles.heatmapTextContainer}>
             <Text style={styles.heatmapTitle}>
@@ -1440,29 +1573,6 @@ export default function App() {
           )}
         </View>
 
-        {/* Live GPS speed gate */}
-        <View style={styles.anomalyStatus}>
-          <Text style={styles.statusText}>
-            Vehicle speed: {speedKmh === null ? "Unavailable" : `${speedKmh.toFixed(1)} km/h`}
-          </Text>
-        </View>
-        <View style={styles.anomalyStatus}>
-          <Text
-            style={[
-              styles.statusText,
-              { color: speedKmh !== null && speedKmh >= 5 ? "#5EEAD4" : "#FBBF24" },
-            ]}
-          >
-            {speedGateMessage}
-          </Text>
-        </View>
-
-        <View style={styles.anomalyStatus}>
-          <Text style={styles.statusText}>
-            AI model: {aiStatus}
-          </Text>
-        </View>
-
         <View style={styles.routeCard}>
           <View style={styles.routeHeader}>
             <Text style={styles.routeTitle}>
@@ -1514,17 +1624,37 @@ export default function App() {
                 </View>
               </View>
 
-              <Text style={styles.disclaimer}>
-                Driving route provided by OSRM using OpenStreetMap road data.
-                {`Showing only reports within ${ROUTE_CORRIDOR_METERS} m of the blue route line and not behind your current position. `}
-                Sensor collection is enabled only while navigation is active; nearby reports are read-only.
-              </Text>
+
             </>
           ) : (
             <Text style={styles.emptyRouteText}>
               Search for a destination to explore route
               information.
             </Text>
+          )}
+
+          {isNavigating && routeSelected && (
+            <View style={{ paddingVertical: 12 }}>
+              <Text style={styles.routeDistance}>
+                Journey completed: {navigationProgress.percentage}%
+              </Text>
+              <Text style={styles.statusText}>
+                Travelled: {formatRouteDistance(navigationProgress.completedMeters)}
+              </Text>
+              <Text style={styles.statusText}>
+                Remaining: {formatRouteDistance(navigationProgress.remainingMeters)}
+              </Text>
+              {!navigationOnRoute && (
+                <Text style={styles.errorText}>
+                  GPS is off the selected route or unavailable. Progress and alerts paused.
+                </Text>
+              )}
+              <View style={{ height: 8, backgroundColor: "#334155", borderRadius: 4,
+                marginTop: 10, overflow: "hidden" }}>
+                <View style={{ height: "100%", width: `${navigationProgress.percentage}%`,
+                  backgroundColor: "#38BDF8" }} />
+              </View>
+            </View>
           )}
 
           <TouchableOpacity
@@ -1541,7 +1671,53 @@ export default function App() {
             </Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </View>}
+
+      <Modal
+        visible={settingsVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSettingsVisible(false)}
+      >
+        <View style={styles.settingsBackdrop}>
+          <View style={styles.settingsSheet}>
+            <View style={styles.settingsSheetHeader}>
+              <Text style={styles.settingsSheetTitle}>Settings</Text>
+              <TouchableOpacity
+                onPress={() => setSettingsVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close settings"
+                style={styles.settingsCloseButton}
+              >
+                <Text style={styles.settingsCloseText}>X</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.settingsOptionRow}>
+              <View style={styles.settingsOptionDetails}>
+                <Text style={styles.settingsOptionTitle}>Show road anomalies</Text>
+                <Text style={styles.settingsOptionHint}>Display reported hazards on the map</Text>
+              </View>
+              <Switch
+                value={showHeatmap}
+                onValueChange={setShowHeatmap}
+                trackColor={{ false: "#344054", true: "#0F766E" }}
+                thumbColor={showHeatmap ? "#5EEAD4" : "#D0D5DD"}
+              />
+            </View>
+            <View style={styles.settingsInfoSection}>
+              <Text style={styles.settingsInfoHeading}>Device status</Text>
+              <Text style={styles.settingsInfoText}>GPS: {currentLocation ? "Connected" : "Unavailable"}</Text>
+              <Text style={styles.settingsInfoText}>
+                Speed: {speedKmh === null ? "Unavailable" : `${speedKmh.toFixed(1)} km/h`}
+              </Text>
+              <Text style={styles.settingsInfoText}>Navigation: {isNavigating ? "Active" : "Inactive"}</Text>
+            </View>
+            <Text style={styles.settingsFootnote}>
+              Alert preferences are not available yet.
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1587,8 +1763,11 @@ const styles = StyleSheet.create({
   },
 
   settingsIcon: {
-    fontSize: 23,
+    fontSize: 27,
+    lineHeight: 33,
     color: "#F8FAFC",
+    textAlign: "center",
+    includeFontPadding: false,
   },
 
   searchPanel: {
@@ -1742,9 +1921,166 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  myLocationIcon: {
+  locationCrosshair: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  crosshairRing: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2.5,
+    borderColor: "#0F766E",
+  },
+  crosshairCenter: {
+    position: "absolute",
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#0F766E",
+  },
+  crosshairTick: {
+    position: "absolute",
+    width: 2.5,
+    height: 6,
+    backgroundColor: "#0F766E",
+  },
+  crosshairTop: { top: 0 },
+  crosshairBottom: { bottom: 0 },
+  crosshairTickHorizontal: {
+    position: "absolute",
+    height: 2.5,
+    width: 6,
+    backgroundColor: "#0F766E",
+  },
+  crosshairLeft: { left: 0 },
+  crosshairRight: { right: 0 },
+  settingsBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 22,
+    backgroundColor: "rgba(0, 0, 0, 0.68)",
+  },
+  settingsSheet: {
+    backgroundColor: "#1E293B",
+    borderRadius: 20,
+    padding: 20,
+  },
+  settingsSheetHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 22,
+  },
+  settingsSheetTitle: {
+    fontSize: 23,
+    fontWeight: "700",
+    color: "#F8FAFC",
+  },
+  settingsCloseButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#334155",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  settingsCloseText: { color: "#F8FAFC", fontSize: 16, fontWeight: "700" },
+  settingsOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingBottom: 18,
+    gap: 12,
+  },
+  settingsOptionDetails: { flex: 1 },
+  settingsOptionTitle: { color: "#F8FAFC", fontSize: 16, fontWeight: "600" },
+  settingsOptionHint: { color: "#94A3B8", fontSize: 12, marginTop: 4 },
+  settingsInfoSection: {
+    borderTopWidth: 1,
+    borderTopColor: "#334155",
+    paddingTop: 16,
+    gap: 9,
+  },
+  settingsInfoHeading: { color: "#F8FAFC", fontWeight: "700", fontSize: 15 },
+  settingsInfoText: { color: "#CBD5E1", fontSize: 14 },
+  settingsFootnote: { color: "#94A3B8", fontSize: 12, marginTop: 20 },
+
+  navDestinationBanner: {
+    marginHorizontal: 12,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#1E293B",
+    borderRadius: 12,
+  },
+  navDestinationText: {
+    color: "#F8FAFC",
+    fontSize: 15,
+    fontWeight: "700",
+  },
+  speedChip: {
+    minWidth: 60,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+  },
+  speedChipValue: {
+    color: "#F8FAFC",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  speedChipUnit: {
+    color: "#94A3B8",
+    fontSize: 10,
+  },
+  activeNavigationBar: {
+    backgroundColor: "#1E293B",
+    borderRadius: 16,
+    marginHorizontal: 10,
+    marginTop: 10,
+    marginBottom: 10,
+    padding: 12,
+  },
+  activeNavigationStats: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    marginBottom: 10,
+  },
+  activeNavigationMetric: {
+    flex: 1,
+    paddingHorizontal: 10,
+  },
+  activeNavigationLabel: {
+    color: "#94A3B8",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1,
+  },
+  activeNavigationValue: {
+    color: "#F8FAFC",
     fontSize: 27,
-    color: "#0F766E",
+    fontWeight: "800",
+    marginTop: 2,
+  },
+  activeNavigationUnit: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#CBD5E1",
+  },
+  quickStopButton: {
+    backgroundColor: "#B91C1C",
+    minHeight: 48,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickStopText: {
+    color: "#FFFFFF",
+    fontWeight: "800",
+    fontSize: 16,
   },
 
   bottomPanel: {

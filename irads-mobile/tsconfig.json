@@ -1,10 +1,23 @@
 {
-  "extends": "expo/tsconfig.base",
-  "compilerOptions": {
-    "strict": true
-  },
-  "exclude": [
-    "backups",
-    "node_modules"
-  ]
+    "extends":  "expo/tsconfig.base",
+    "compilerOptions":  {
+                            "strict":  true
+                        },
+    "include":  [
+                    "App.tsx",
+                    "IRADSMap*.tsx",
+                    "index.ts",
+                    "sensors/**/*.ts",
+                    "sensors/**/*.tsx",
+                    "src/**/*.ts",
+                    "src/**/*.tsx",
+                    "declarations.d.ts",
+                    "expo-env.d.ts",
+                    ".expo/types/**/*.ts"
+                ],
+    "exclude":  [
+                    "node_modules",
+                    "eas-archive-inspect",
+                    "**/eas-archive-inspect/**"
+                ]
 }

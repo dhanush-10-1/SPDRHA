@@ -1,2 +1,4 @@
-﻿export const API_BASE_URL =
-  "https://con-config-badge-doctor.trycloudflare.com".trim().replace(/\/+$/, "");
+export const API_BASE_URL =
+  "https://porcelain-eventually-deutsche-launches.trycloudflare.com"
+    .trim()
+    .replace(/\/+$/, "");

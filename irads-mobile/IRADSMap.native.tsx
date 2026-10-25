@@ -1,29 +1,25 @@
-﻿import React, { useEffect, useRef } from "react";
+﻿import React, { useEffect, useMemo, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import MapView, {
   Circle,
   Marker,
   Polyline,
-  PROVIDER_DEFAULT,
+  PROVIDER_GOOGLE,
   type Region,
 } from "react-native-maps";
 
-type Coordinate = {
-  latitude: number;
-  longitude: number;
-};
-
+type Coordinate = { latitude: number; longitude: number };
 type Hazard = Coordinate & {
   id: string;
-  intensity?: number;
-  confidence?: number | null;
-  type?: string;
+  intensity: number;
+  type: "POTHOLE" | "SPEED_BREAKER";
+  confidence: number;
 };
-
-type Props = {
+type IRADSMapProps = {
   currentLocation: Coordinate | null;
   initialCenter: Coordinate;
   routeSelected: boolean;
+  isNavigating?: boolean;
   showHeatmap: boolean;
   route: Coordinate[];
   hazards: Hazard[];
@@ -32,197 +28,152 @@ type Props = {
   recenterRequest?: number;
 };
 
-const DEFAULT_LATITUDE_DELTA = 0.035;
-const DEFAULT_LONGITUDE_DELTA = 0.035;
+const DARK_MAP_STYLE = [
+  { elementType: "geometry", stylers: [{ color: "#17212b" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#a5b4c5" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#17212b" }] },
+  { featureType: "administrative", elementType: "geometry.stroke", stylers: [{ color: "#344454" }] },
+  { featureType: "poi", elementType: "geometry", stylers: [{ color: "#1d2b36" }] },
+  { featureType: "poi.park", elementType: "geometry.fill", stylers: [{ color: "#18372f" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#293846" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#3a4b5b" }] },
+  { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#435365" }] },
+  { featureType: "transit", elementType: "geometry", stylers: [{ color: "#253440" }] },
+  { featureType: "water", elementType: "geometry.fill", stylers: [{ color: "#0c1822" }] },
+];
 
-function getHazardColor(type?: string): string {
-  switch (type) {
-    case "POTHOLE":
-      return "#EF4444";
-    case "SPEED_BREAKER":
-      return "#F59E0B";
-    case "BUMP":
-      return "#A78BFA";
-    default:
-      return "#EF4444";
+// Find the closest point on the route and keep only the route ahead.
+// Coordinates are projected into a local metre-based plane for stable GPS snapping.
+function routeAhead(route: Coordinate[], location: Coordinate): Coordinate[] {
+  if (route.length < 2) return route;
+  const metresPerDegreeLat = 111_195;
+  const metresPerDegreeLon = metresPerDegreeLat * Math.cos(location.latitude * Math.PI / 180);
+  let bestDistance = Infinity;
+  let bestIndex = -1;
+  let bestT = 0;
+  for (let i = 0; i < route.length - 1; i++) {
+    const a = route[i];
+    const b = route[i + 1];
+    const ax = (a.longitude - location.longitude) * metresPerDegreeLon;
+    const ay = (a.latitude - location.latitude) * metresPerDegreeLat;
+    const dx = (b.longitude - a.longitude) * metresPerDegreeLon;
+    const dy = (b.latitude - a.latitude) * metresPerDegreeLat;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+    const distance = Math.hypot(ax + t * dx, ay + t * dy);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+      bestT = t;
+    }
   }
+  // Off-route GPS: preserve the route rather than erasing it unpredictably.
+  if (bestDistance > 30 || bestIndex < 0) return route;
+  const a = route[bestIndex];
+  const b = route[bestIndex + 1];
+  const snapped = {
+    latitude: a.latitude + (b.latitude - a.latitude) * bestT,
+    longitude: a.longitude + (b.longitude - a.longitude) * bestT,
+  };
+  return [snapped, ...route.slice(bestIndex + 1)];
 }
 
 export default function IRADSMap({
   currentLocation,
   initialCenter,
   routeSelected,
+  isNavigating = false,
   showHeatmap,
   route,
   hazards,
   destinationCoordinate = null,
   destinationLabel = "Destination",
   recenterRequest = 0,
-}: Props) {
+}: IRADSMapProps) {
   const mapRef = useRef<MapView | null>(null);
-
+  const lastRecenterRequest = useRef(recenterRequest);
   const initialRegion: Region = {
     ...initialCenter,
-    latitudeDelta: DEFAULT_LATITUDE_DELTA,
-    longitudeDelta: DEFAULT_LONGITUDE_DELTA,
+    latitudeDelta: 0.055,
+    longitudeDelta: 0.055,
   };
+  const visibleRoute = useMemo(
+    () => isNavigating && currentLocation ? routeAhead(route, currentLocation) : route,
+    [isNavigating, currentLocation?.latitude, currentLocation?.longitude, route],
+  );
 
-  // Fit the selected route when the user calculates a route.
   useEffect(() => {
-    if (!routeSelected || route.length < 2 || !mapRef.current) {
-      return;
-    }
-
-    const coordinates = destinationCoordinate
-      ? [...route, destinationCoordinate]
-      : route;
-
+    if (!routeSelected || isNavigating || route.length < 2 || !mapRef.current) return;
+    const fitCoordinates = destinationCoordinate ? [...route, destinationCoordinate] : route;
     const timer = setTimeout(() => {
-      mapRef.current?.fitToCoordinates(coordinates, {
-        edgePadding: {
-          top: 55,
-          right: 35,
-          bottom: 55,
-          left: 35,
-        },
+      mapRef.current?.fitToCoordinates(fitCoordinates, {
+        edgePadding: { top: 42, right: 34, bottom: 42, left: 34 },
         animated: true,
       });
-    }, 250);
-
+    }, 150);
     return () => clearTimeout(timer);
-  }, [routeSelected, route, destinationCoordinate]);
+  }, [routeSelected, isNavigating, route, destinationCoordinate]);
 
-  // Recenter only when the user taps the location button.
-  // GPS updates alone should not continuously move the camera.
   useEffect(() => {
-    if (recenterRequest <= 0 || !currentLocation || !mapRef.current) {
-      return;
-    }
+    if (routeSelected || !currentLocation || !mapRef.current) return;
+    mapRef.current.animateToRegion({ ...currentLocation, latitudeDelta: 0.055, longitudeDelta: 0.055 }, 300);
+  }, [routeSelected, currentLocation?.latitude, currentLocation?.longitude]);
 
-    mapRef.current.animateToRegion(
-      {
-        ...currentLocation,
-        latitudeDelta: 0.008,
-        longitudeDelta: 0.008,
-      },
-      500,
-    );
-  }, [recenterRequest]);
+  useEffect(() => {
+    if (!isNavigating || !currentLocation || !mapRef.current) return;
+    mapRef.current.animateToRegion({ ...currentLocation, latitudeDelta: 0.008, longitudeDelta: 0.008 }, 500);
+  }, [isNavigating, currentLocation?.latitude, currentLocation?.longitude]);
+
+  useEffect(() => {
+    if (lastRecenterRequest.current === recenterRequest) return;
+    lastRecenterRequest.current = recenterRequest;
+    if (!currentLocation || !mapRef.current) return;
+    mapRef.current.animateToRegion({ ...currentLocation, latitudeDelta: 0.008, longitudeDelta: 0.008 }, 500);
+  }, [recenterRequest, currentLocation?.latitude, currentLocation?.longitude]);
 
   return (
-    <MapView
-      ref={mapRef}
-      style={StyleSheet.absoluteFill}
-      provider={PROVIDER_DEFAULT}
-      initialRegion={initialRegion}
-      showsUserLocation={false}
-      showsMyLocationButton={false}
-      showsCompass
-      toolbarEnabled={false}
-    >
-      {/* Custom blue GPS indicator with a soft halo. */}
-      {currentLocation && (
-        <>
-          <Circle
-            center={currentLocation}
-            radius={22}
-            strokeColor="rgba(56,189,248,0.50)"
-            strokeWidth={1}
-            fillColor="rgba(56,189,248,0.18)"
-            zIndex={50}
-          />
-
-          <Marker
-            coordinate={currentLocation}
-            title="Your current location"
-            anchor={{ x: 0.5, y: 0.5 }}
-            tracksViewChanges={false}
-            zIndex={100}
-          >
-            <View style={styles.currentLocationDot} />
+    <View style={styles.container}>
+      <MapView
+        ref={mapRef}
+        style={styles.map}
+        provider={PROVIDER_GOOGLE}
+        initialRegion={initialRegion}
+        customMapStyle={DARK_MAP_STYLE}
+        toolbarEnabled={false}
+        showsUserLocation={false}
+        showsMyLocationButton={false}
+        loadingEnabled
+      >
+        {routeSelected && visibleRoute.length >= 2 && (
+          <Polyline coordinates={visibleRoute} strokeColor="#38BDF8" strokeWidth={5} lineCap="round" lineJoin="round" />
+        )}
+        {showHeatmap && hazards.map((hazard) => {
+          const isPothole = hazard.type === "POTHOLE";
+          const color = isPothole ? "#EF4444" : "#F59E0B";
+          const confidence = Math.max(0, Math.min(1, Number(hazard.confidence ?? hazard.intensity) || 0));
+          return (
+            <React.Fragment key={hazard.id}>
+              <Circle center={hazard} radius={14 + confidence * 14} strokeColor={color} strokeWidth={2} fillColor={`${color}55`} />
+              <Marker coordinate={hazard} title={isPothole ? "Pothole" : "Speed breaker"} description={`Confidence: ${(confidence * 100).toFixed(0)}%`} pinColor={color} tracksViewChanges={false} />
+            </React.Fragment>
+          );
+        })}
+        {destinationCoordinate && (
+          <Marker coordinate={destinationCoordinate} title={destinationLabel} description="Selected destination" pinColor="#EF4444" zIndex={2000} anchor={{ x: 0.5, y: 1 }} tracksViewChanges={false} />
+        )}
+        {currentLocation && (
+          <Marker coordinate={currentLocation} title="My current location" description="Live GPS position" anchor={{ x: 0.5, y: 0.5 }} zIndex={3000}>
+            <View style={styles.locationOuter}><View style={styles.locationInner} /></View>
           </Marker>
-        </>
-      )}
-
-      {/* Confirmed anomalies: coloured dots, not default map pins. */}
-      {showHeatmap &&
-        hazards
-          .filter(
-            (hazard) =>
-              Number.isFinite(hazard.latitude) &&
-              Number.isFinite(hazard.longitude) &&
-              Math.abs(hazard.latitude) <= 90 &&
-              Math.abs(hazard.longitude) <= 180,
-          )
-          .map((hazard) => {
-            const color = getHazardColor(hazard.type);
-
-            return (
-              <Marker
-                key={hazard.id}
-                coordinate={{
-                  latitude: hazard.latitude,
-                  longitude: hazard.longitude,
-                }}
-                title={hazard.type?.replace("_", " ") ?? "Road anomaly"}
-                description={
-                  hazard.confidence == null
-                    ? "Synthetic demonstration anomaly"
-                    : `Confidence: ${(hazard.confidence * 100).toFixed(0)}%`
-                }
-                anchor={{ x: 0.5, y: 0.5 }}
-                tracksViewChanges={false}
-                zIndex={150}
-              >
-                <View
-                  style={[
-                    styles.anomalyDot,
-                    { backgroundColor: color },
-                  ]}
-                />
-              </Marker>
-            );
-          })}
-
-      {/* Keep the blue route line. */}
-      {routeSelected && route.length > 1 && (
-        <Polyline
-          coordinates={route}
-          strokeColor="#38BDF8"
-          strokeWidth={5}
-          zIndex={10}
-        />
-      )}
-
-      {/* The selected destination deliberately remains a red pin. */}
-      {destinationCoordinate && (
-        <Marker
-          coordinate={destinationCoordinate}
-          title={destinationLabel}
-          description="Selected destination"
-          pinColor="#EF4444"
-          zIndex={2000}
-          anchor={{ x: 0.5, y: 1 }}
-        />
-      )}
-    </MapView>
+        )}
+      </MapView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  currentLocationDot: {
-    width: 15,
-    height: 15,
-    borderRadius: 8,
-    backgroundColor: "#38BDF8",
-    borderColor: "#FFFFFF",
-    borderWidth: 2,
-  },
-  anomalyDot: {
-    width: 11,
-    height: 11,
-    borderRadius: 6,
-    borderColor: "#FFFFFF",
-    borderWidth: 1.5,
-  },
+  container: { flex: 1, minHeight: 220, width: "100%", height: "100%" },
+  map: { width: "100%", height: "100%", minHeight: 220, backgroundColor: "#17212b" },
+  locationOuter: { width: 24, height: 24, borderRadius: 12, backgroundColor: "#FFFFFF", alignItems: "center", justifyContent: "center", elevation: 5 },
+  locationInner: { width: 16, height: 16, borderRadius: 8, backgroundColor: "#2563EB" },
 });
