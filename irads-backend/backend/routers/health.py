@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import redis.asyncio as redis
@@ -34,8 +35,11 @@ async def health_check():
     producer = get_producer()
     if producer is not None:
         try:
-            partitions = await producer.partitions_for(
-                os.getenv("KAFKA_TOPIC", "raw_anomaly_events")
+            partitions = await asyncio.wait_for(
+                producer.partitions_for(
+                    os.getenv("KAFKA_TOPIC", "raw_anomaly_events")
+                ),
+                timeout=5,
             )
             if not partitions:
                 raise RuntimeError("Kafka topic has no available partitions")
