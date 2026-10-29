@@ -1,7 +1,6 @@
-﻿import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import MapView, {
-  Circle,
   Marker,
   Polyline,
   PROVIDER_GOOGLE,
@@ -153,8 +152,24 @@ export default function IRADSMap({
           const confidence = Math.max(0, Math.min(1, Number(hazard.confidence ?? hazard.intensity) || 0));
           return (
             <React.Fragment key={hazard.id}>
-              <Circle center={hazard} radius={14 + confidence * 14} strokeColor={color} strokeWidth={2} fillColor={`${color}55`} />
-              <Marker coordinate={hazard} title={isPothole ? "Pothole" : "Speed breaker"} description={`Confidence: ${(confidence * 100).toFixed(0)}%`} pinColor={color} tracksViewChanges={false} />
+              <Marker
+                coordinate={hazard}
+                title={isPothole ? "Pothole" : "Speed breaker"}
+                description={`Confidence: ${(confidence * 100).toFixed(0)}%`}
+                anchor={{ x: 0.5, y: 0.5 }}
+                tracksViewChanges={false}
+              >
+                <View
+                  style={{
+                    width: 14,
+                    height: 14,
+                    borderRadius: 7,
+                    backgroundColor: color,
+                    borderWidth: 2,
+                    borderColor: "#FFFFFF",
+                  }}
+                />
+              </Marker>
             </React.Fragment>
           );
         })}

@@ -1,4 +1,4 @@
-﻿import React, {
+import React, {
   useCallback,
   useEffect,
   useRef,
@@ -11,12 +11,14 @@ import {
   Alert,
   Modal,
   SafeAreaView,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Switch,
   Text,
   TextInput,
   TouchableOpacity,
+  Vibration,
   View,
   Platform,
 } from "react-native";
@@ -34,6 +36,8 @@ import { AIService } from "./src/ai/aiService";
 import type { SensorReading } from "./src/sensors/types";
 import { API_BASE_URL } from "./src/config";
 import { syncService } from "./src/storage/syncService";
+import { getDeviceIdHash } from "./src/storage/deviceIdentity";
+import { getPilotKey, savePilotKey } from "./src/storage/pilotCredentials";
 
 // The platform-specific map can accept newer optional props while the native
 // map implementation is updated separately. Expo Web resolves IRADSMap.web.tsx.
@@ -213,6 +217,12 @@ export default function App() {
   const latestGpsFixRef = useRef<LiveGPSFix | null>(null);
   const aiServiceRef = useRef<AIService | null>(null);
   const [aiStatus, setAiStatus] = useState("Waiting for navigation.");
+
+  // Testing notification for successfully saved anomaly detections.
+  const [detectionToast, setDetectionToast] = useState<
+    "POTHOLE" | "SPEED_BREAKER" | null
+  >(null);
+  const detectionToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousPositionRef = useRef<{
     latitude: number;
     longitude: number;
@@ -242,6 +252,43 @@ export default function App() {
 
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [pilotKeyInput, setPilotKeyInput] = useState("");
+  const [pilotKeySaved, setPilotKeySaved] = useState(false);
+  const [pilotDeviceId, setPilotDeviceId] = useState("");
+  const [pilotSaving, setPilotSaving] = useState(false);
+
+  useEffect(() => {
+    if (!settingsVisible || Platform.OS === "web") return;
+    let active = true;
+    void Promise.all([getDeviceIdHash(), getPilotKey()])
+      .then(([id, key]) => {
+        if (active) {
+          setPilotDeviceId(id);
+          setPilotKeySaved(Boolean(key));
+        }
+      })
+      .catch(() => {
+        if (active) showMessage("Pilot access", "Could not load device enrollment status.");
+      });
+    return () => { active = false; };
+  }, [settingsVisible]);
+
+  async function handleSavePilotKey() {
+    if (Platform.OS === "web" || pilotSaving) return;
+    setPilotSaving(true);
+    try {
+      await savePilotKey(pilotKeyInput);
+      setPilotKeyInput("");
+      setPilotKeySaved(true);
+      showMessage("Pilot access", "Key saved on this device. Enrollment will be verified when the backend is available.");
+      void syncService.syncPendingEvents();
+    } catch (error) {
+      showMessage("Pilot access", error instanceof Error ? error.message : "Could not save pilot access key.");
+    } finally {
+      setPilotSaving(false);
+    }
+  }
+
   const [routeSelected, setRouteSelected] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
   const [navigationProgress, setNavigationProgress] = useState({
@@ -254,6 +301,7 @@ export default function App() {
   const [recenterRequest, setRecenterRequest] = useState(0);
 
   const [loadingLocation, setLoadingLocation] = useState(true);
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
   const [loadingHazards, setLoadingHazards] = useState(false);
 
   const [hazardError, setHazardError] = useState<string | null>(null);
@@ -301,66 +349,48 @@ export default function App() {
 
   useEffect(() => {
     let mounted = true;
+    let hasLiveFix = false;
     let locationSubscription: Location.LocationSubscription | null = null;
+    let acquisitionTimer: ReturnType<typeof setTimeout> | null = null;
 
     async function startLocationTracking() {
       try {
-        const { status } =
-          await Location.requestForegroundPermissionsAsync();
-
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (!mounted) return;
         if (status !== "granted") {
           console.warn("Location permission was not granted.");
+          setLocationNotice("Enable location permission to get GPS updates.");
+          setLoadingLocation(false);
           return;
         }
 
-        // Get an initial high-accuracy position before starting live updates.
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
+        // A short cached fix can center the map while waiting for live GPS.
+        // Do not feed it to the sensor pipeline: it is not a live GPS fix.
+        void Location.getLastKnownPositionAsync({
+          maxAge: 60_000,
+          requiredAccuracy: 100,
+        }).then((cached) => {
+          if (!mounted || hasLiveFix || !cached) return;
+          if (!Number.isFinite(cached.coords.latitude) ||
+              !Number.isFinite(cached.coords.longitude)) return;
+          setCurrentLocation({
+            latitude: cached.coords.latitude,
+            longitude: cached.coords.longitude,
+          });
+          setLocationNotice("Showing recent position; waiting for live GPS.");
+        }).catch((error) => {
+          console.warn("Last-known location unavailable:", error);
         });
 
-        const initialSpeed = location.coords.speed;
-        speedRef.current =
-          initialSpeed !== null &&
-          Number.isFinite(initialSpeed) &&
-          initialSpeed >= 0
-            ? initialSpeed
-            : null;
+        // Start live updates immediately. Do NOT block on getCurrentPositionAsync:
+        // initial satellite acquisition can fail or take longer offline.
+        acquisitionTimer = setTimeout(() => {
+          if (!mounted || hasLiveFix) return;
+          setLoadingLocation(false);
+          setLocationNotice("Waiting for GPS signal. Try an open outdoor area.");
+        }, 20_000);
 
-        previousPositionRef.current = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          timestamp: location.timestamp,
-          accuracy: location.coords.accuracy,
-        };
-
-        if (mounted) {
-          setSpeedKmh(
-            speedRef.current === null ? null : speedRef.current * 3.6,
-          );
-          setSpeedGateMessage(checkSpeedGate(speedRef.current).reason);
-          const coordinate = {
-            latitude: location.coords.latitude,
-            longitude: location.coords.longitude,
-          };
-
-          latestGpsFixRef.current = {
-            ...coordinate,
-            accuracyM: location.coords.accuracy,
-            speedKmh:
-              speedRef.current === null ? null : speedRef.current * 3.6,
-            timestamp: location.timestamp,
-          };
-
-          setCurrentLocation(coordinate);
-
-          console.log("Initial location:", {
-            ...coordinate,
-            accuracyMeters: location.coords.accuracy,
-          });
-        }
-
-        // Keep the position updated as the device moves.
-        locationSubscription = await Location.watchPositionAsync(
+        const subscription = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.High,
             timeInterval: 5000,
@@ -368,6 +398,9 @@ export default function App() {
           },
           (updatedLocation) => {
             if (!mounted) return;
+            hasLiveFix = true;
+            setLoadingLocation(false);
+            setLocationNotice(null);
 
             const coordinate = {
               latitude: updatedLocation.coords.latitude,
@@ -464,11 +497,16 @@ export default function App() {
             });
           }
         );
+        if (!mounted) {
+          subscription.remove();
+          return;
+        }
+        locationSubscription = subscription;
       } catch (error) {
-        console.error("Could not retrieve or track location:", error);
-      } finally {
+        console.error("Could not start location tracking:", error);
         if (mounted) {
           setLoadingLocation(false);
+          setLocationNotice("GPS tracking unavailable. Check Location settings.");
         }
       }
     }
@@ -477,6 +515,7 @@ export default function App() {
 
     return () => {
       mounted = false;
+      if (acquisitionTimer !== null) clearTimeout(acquisitionTimer);
       locationSubscription?.remove();
     };
   }, []);
@@ -519,6 +558,21 @@ export default function App() {
         }
 
         aiServiceRef.current = service;
+
+        service.onAnomalySaved = (type) => {
+          if (!active) return;
+
+          if (detectionToastTimerRef.current !== null) {
+            clearTimeout(detectionToastTimerRef.current);
+          }
+
+          setDetectionToast(type);
+
+          detectionToastTimerRef.current = setTimeout(() => {
+            setDetectionToast(null);
+            detectionToastTimerRef.current = null;
+          }, 3000);
+        };
         setAiStatus(
           `Model ready. Waiting for ${SENSOR_WINDOW_SIZE} sensor samples at speed >= 5 km/h.`,
         );
@@ -658,6 +712,14 @@ export default function App() {
       active = false;
       stopSensors?.();
       aiServiceRef.current?.reset();
+      if (aiServiceRef.current) {
+        aiServiceRef.current.onAnomalySaved = undefined;
+      }
+      if (detectionToastTimerRef.current !== null) {
+        clearTimeout(detectionToastTimerRef.current);
+        detectionToastTimerRef.current = null;
+      }
+      setDetectionToast(null);
       console.log("Navigation stopped: sensor collection disabled.");
     };
   }, [isNavigating]);
@@ -926,7 +988,25 @@ export default function App() {
 
     const nearest = upcoming[0];
     if (!nearest) return;
-    // Voice and vibration alerts will be enabled in a later phase.
+
+    // Alert only once per pothole during this navigation session.
+    alertedHazardsRef.current.add(nearest.id);
+
+    const distance = Math.max(1, Math.round(nearest.distanceAhead));
+    const message = `Warning! Pothole ahead in ${distance} metres.`;
+
+    console.log("IRADS POTHOLE ALERT:", {
+      anomalyId: nearest.id,
+      distanceMeters: distance,
+    });
+
+    if (Platform.OS !== "web") {
+      Vibration.vibrate(400);
+      Speech.speak(message, {
+        language: "en-IN",
+        rate: 0.95,
+      });
+    }
   }, [isNavigating, currentLocation, routeCoordinates, hazards]);
 
   // ----------------------------------------------------------
@@ -1251,8 +1331,11 @@ export default function App() {
     }
 
     if (!isNavigating) {
-      if (!currentLocation) {
-        showMessage("GPS unavailable", "Wait for your live GPS position before navigating.");
+      const liveFix = latestGpsFixRef.current;
+      if (!currentLocation || !liveFix ||
+          Date.now() - liveFix.timestamp > 10_000 ||
+          liveFix.accuracyM === null || liveFix.accuracyM > 30) {
+        showMessage("GPS unavailable", "Wait for a fresh, accurate GPS position before navigating.");
         return;
       }
       alertedHazardsRef.current.clear();
@@ -1457,15 +1540,11 @@ export default function App() {
           recenterRequest={recenterRequest}
         />
 
-        {loadingLocation && (
+        {(loadingLocation || locationNotice) && (
           <View style={styles.locationBadge}>
-            <ActivityIndicator
-              size="small"
-              color="#38BDF8"
-            />
-
+            {loadingLocation && <ActivityIndicator size="small" color="#38BDF8" />}
             <Text style={styles.locationBadgeText}>
-              Locating you...
+              {locationNotice ?? "Locating you..."}
             </Text>
           </View>
         )}
@@ -1681,6 +1760,7 @@ export default function App() {
       >
         <View style={styles.settingsBackdrop}>
           <View style={styles.settingsSheet}>
+            <ScrollView keyboardShouldPersistTaps="handled">
             <View style={styles.settingsSheetHeader}>
               <Text style={styles.settingsSheetTitle}>Settings</Text>
               <TouchableOpacity
@@ -1704,6 +1784,38 @@ export default function App() {
                 thumbColor={showHeatmap ? "#5EEAD4" : "#D0D5DD"}
               />
             </View>
+            {Platform.OS !== "web" && (
+              <View style={styles.pilotSection}>
+                <Text style={styles.settingsInfoHeading}>Pilot access</Text>
+                <Text style={styles.settingsOptionHint}>
+                  {pilotKeySaved ? "A pilot key is saved on this device." : "No pilot key saved."}
+                </Text>
+                <Text style={styles.pilotDeviceIdLabel}>Device ID (share only with the pilot administrator)</Text>
+                <Text selectable style={styles.pilotDeviceIdValue}>{pilotDeviceId || "Loading..."}</Text>
+                <TextInput
+                  style={styles.pilotKeyInput}
+                  value={pilotKeyInput}
+                  onChangeText={setPilotKeyInput}
+                  placeholder={pilotKeySaved ? "Enter a replacement pilot key" : "Enter your pilot access key"}
+                  placeholderTextColor="#94A3B8"
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  accessibilityLabel="Pilot access key"
+                />
+                <TouchableOpacity
+                  style={styles.pilotSaveButton}
+                  onPress={() => void handleSavePilotKey()}
+                  disabled={pilotSaving || pilotKeyInput.trim().length < 32}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.pilotSaveButtonText}>{pilotSaving ? "Saving..." : "Save pilot key"}</Text>
+                </TouchableOpacity>
+                <Text style={styles.settingsOptionHint}>
+                  Saving a key does not confirm server enrollment. Never share your key or include it in screenshots.
+                </Text>
+              </View>
+            )}
             <View style={styles.settingsInfoSection}>
               <Text style={styles.settingsInfoHeading}>Device status</Text>
               <Text style={styles.settingsInfoText}>GPS: {currentLocation ? "Connected" : "Unavailable"}</Text>
@@ -1715,9 +1827,26 @@ export default function App() {
             <Text style={styles.settingsFootnote}>
               Alert preferences are not available yet.
             </Text>
+            </ScrollView>
           </View>
         </View>
       </Modal>
+
+      {detectionToast !== null && (
+        <View
+          pointerEvents="none"
+          style={styles.detectionToast}
+        >
+          <Text style={styles.detectionToastTitle}>
+            {detectionToast === "POTHOLE"
+              ? "Pothole Detected!"
+              : "Speed Breaker Detected!"}
+          </Text>
+          <Text style={styles.detectionToastSubtitle}>
+            Saved locally - Upload pending
+          </Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -1730,6 +1859,35 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#101820",
+  },
+
+  detectionToast: {
+    position: "absolute",
+    top: 75,
+    left: 20,
+    right: 20,
+    zIndex: 1000,
+    elevation: 12,
+    backgroundColor: "#14532D",
+    borderWidth: 1,
+    borderColor: "#22C55E",
+    borderRadius: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+
+  detectionToastTitle: {
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+
+  detectionToastSubtitle: {
+    color: "#DCFCE7",
+    fontSize: 12,
+    marginTop: 5,
+    textAlign: "center",
   },
 
   header: {
@@ -1964,6 +2122,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.68)",
   },
   settingsSheet: {
+    maxHeight: "85%",
     backgroundColor: "#1E293B",
     borderRadius: 20,
     padding: 20,
@@ -2007,6 +2166,31 @@ const styles = StyleSheet.create({
   settingsInfoHeading: { color: "#F8FAFC", fontWeight: "700", fontSize: 15 },
   settingsInfoText: { color: "#CBD5E1", fontSize: 14 },
   settingsFootnote: { color: "#94A3B8", fontSize: 12, marginTop: 20 },
+  pilotSection: {
+    borderTopWidth: 1,
+    borderTopColor: "#334155",
+    paddingTop: 12,
+    paddingBottom: 14,
+    gap: 9,
+  },
+  pilotDeviceIdLabel: { color: "#94A3B8", fontSize: 12 },
+  pilotDeviceIdValue: { color: "#CBD5E1", fontSize: 11 },
+  pilotKeyInput: {
+    color: "#F8FAFC",
+    borderColor: "#64748B",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  pilotSaveButton: {
+    backgroundColor: "#0F766E",
+    borderRadius: 10,
+    alignItems: "center",
+    paddingVertical: 12,
+  },
+  pilotSaveButtonText: { color: "#FFFFFF", fontWeight: "700" },
+
 
   navDestinationBanner: {
     marginHorizontal: 12,

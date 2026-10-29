@@ -1,4 +1,4 @@
-﻿import * as Crypto from 'expo-crypto';
+import * as Crypto from 'expo-crypto';
 
 import { SensorReading } from '../sensors/types';
 import { saveAnomalyEvent } from '../storage/database';
@@ -38,6 +38,7 @@ export class AIService {
   private inferenceEngine: InferenceEngine;
   private saveEvent: SaveAnomalyEvent;
   private startSync: () => Promise<void>;
+  onAnomalySaved?: (type: 'POTHOLE' | 'SPEED_BREAKER') => void;
 
   private inferenceLifecycle = new InferenceLifecycle<
     InferenceInput,
@@ -193,6 +194,13 @@ export class AIService {
 
       syncStatus: 'PENDING',
     });
+
+    // Notify the UI only after SQLite has saved the event.
+    try {
+      this.onAnomalySaved?.(prediction.type);
+    } catch (error) {
+      console.warn('Anomaly notification callback failed:', error);
+    }
 
     /*
      * Start synchronization without blocking

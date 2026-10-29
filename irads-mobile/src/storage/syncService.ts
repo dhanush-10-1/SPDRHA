@@ -4,6 +4,8 @@ import {
 } from './database';
 import type { AnomalyEvent } from './database';
 import { API_BASE_URL } from '../config';
+import { getDeviceIdHash } from './deviceIdentity';
+import { getPilotKey } from './pilotCredentials';
 
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
@@ -137,34 +139,46 @@ export class SyncService {
       return this.accessToken;
     }
 
-    console.log('Requesting development JWT...');
+    const [deviceIdHash, pilotKey] = await Promise.all([
+      getDeviceIdHash(),
+      getPilotKey(),
+    ]);
+    if (!pilotKey || pilotKey.length < 32) {
+      throw new Error('Pilot access key is missing. Enroll this device before syncing.');
+    }
+
+    console.log('Requesting pilot JWT...');
     const response = await fetchWithTimeout(`${API_BASE_URL}/api/v1/dev/token`, {
       method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Pilot-Key': pilotKey,
+      },
+      body: JSON.stringify({ device_id_hash: deviceIdHash }),
     });
     const responseText = await response.text();
 
     console.log('TOKEN HTTP STATUS:', response.status);
-    console.log('TOKEN HTTP RESPONSE:', responseText);
-
+    // Do not log the token response or the pilot key.
     if (!response.ok) {
-      throw new Error(`Failed to obtain auth token: ${response.status} ${responseText}`);
+      throw new Error(`Failed to obtain pilot auth token (HTTP ${response.status}).`);
     }
 
     let data: { access_token?: string };
     try {
       data = JSON.parse(responseText) as { access_token?: string };
     } catch {
-      throw new Error('Development token endpoint returned invalid JSON.');
+      throw new Error('Pilot token endpoint returned invalid JSON.');
     }
 
     if (!data.access_token) {
-      throw new Error('Development token response did not contain access_token.');
+      throw new Error('Pilot token response did not contain access_token.');
     }
 
     this.accessToken = data.access_token;
-    // Refresh before the development token's expected expiry.
-    this.tokenExpiresAt = now + 11 * 60 * 60 * 1000;
-    console.log('Development JWT cached.');
+    // Refresh before the token's expected 12-hour expiry.
+    this.tokenExpiresAt = Date.now() + 11 * 60 * 60 * 1000;
+    console.log('Pilot JWT cached.');
     return this.accessToken;
   }
 }

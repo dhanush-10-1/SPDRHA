@@ -1,23 +1,29 @@
+
 {
-    "extends":  "expo/tsconfig.base",
-    "compilerOptions":  {
-                            "strict":  true
-                        },
-    "include":  [
-                    "App.tsx",
-                    "IRADSMap*.tsx",
-                    "index.ts",
-                    "sensors/**/*.ts",
-                    "sensors/**/*.tsx",
-                    "src/**/*.ts",
-                    "src/**/*.tsx",
-                    "declarations.d.ts",
-                    "expo-env.d.ts",
-                    ".expo/types/**/*.ts"
-                ],
-    "exclude":  [
-                    "node_modules",
-                    "eas-archive-inspect",
-                    "**/eas-archive-inspect/**"
-                ]
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "react-native-fast-tflite": [
+        "./node_modules/react-native-fast-tflite/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "App.tsx",
+    "IRADSMap*.tsx",
+    "index.ts",
+    "sensors/**/*.ts",
+    "sensors/**/*.tsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "declarations.d.ts",
+    "expo-env.d.ts",
+    ".expo/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "eas-archive-inspect",
+    "**/eas-archive-inspect/**"
+  ]
 }
